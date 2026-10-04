@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useApp } from "../context";
 import { SUCURSALES } from "../data";
+import ModalConfigWhatsApp from "./ModalConfigWhatsApp";
 
 type NavItem = {
   id: "dashboard" | "inventario" | "movimientos" | "herramientas" | "reportes" | "usuarios";
@@ -78,10 +79,20 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     repuestos,
     tema,
     toggleTema,
+    whatsAppConfig,
+    actualizarWhatsAppConfig,
   } = useApp();
 
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [modalWhatsAppOpen, setModalWhatsAppOpen] = useState(false);
+
+  const whatsappListo = Boolean(
+    whatsAppConfig?.activo &&
+    whatsAppConfig?.instanceId &&
+    whatsAppConfig?.token &&
+    whatsAppConfig?.destinatario
+  );
 
   if (!usuarioActual) return null;
 
@@ -123,21 +134,43 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           </div>
         </div>
 
-        <button
-          onClick={toggleTema}
-          title={tema === "oscuro" ? "Cambiar a Modo Claro" : "Cambiar a Modo Oscuro"}
-          className="p-1.5 rounded-md hover:bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
-        >
-          {tema === "oscuro" ? (
-            <svg viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5 text-amber-400">
-              <path d="M10 2a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0v-1.5A.75.75 0 0 1 10 2Zm0 13a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0v-1.5A.75.75 0 0 1 10 15Zm-8-5a.75.75 0 0 1 .75-.75h1.5a.75.75 0 0 1 0 1.5h-1.5A.75.75 0 0 1 2 10Zm13 0a.75.75 0 0 1 .75-.75h1.5a.75.75 0 0 1 0 1.5h-1.5A.75.75 0 0 1 15 10Zm-10.364-5.636a.75.75 0 0 1 1.06 0l1.061 1.06a.75.75 0 0 1-1.06 1.06l-1.06-1.06a.75.75 0 0 1 0-1.06Zm9.193 9.193a.75.75 0 0 1 1.06 0l1.06 1.061a.75.75 0 0 1-1.06 1.06l-1.06-1.061a.75.75 0 0 1 0-1.06ZM4.636 15.364a.75.75 0 0 1 0-1.06l1.06-1.061a.75.75 0 1 1 1.061 1.06l-1.06 1.061a.75.75 0 0 1-1.061 0Zm9.193-9.193a.75.75 0 0 1 0-1.06l1.061-1.06a.75.75 0 0 1 1.06 1.06l-1.06 1.061a.75.75 0 0 1-1.061 0ZM10 6.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Z" />
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => setModalWhatsAppOpen(true)}
+            title={
+              whatsappListo
+                ? "WhatsApp Conectado (Alertas activas)"
+                : "Configurar Alertas de WhatsApp"
+            }
+            className="p-1.5 rounded-md hover:bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-emerald-400 transition-colors relative"
+            aria-label="Configurar WhatsApp"
+          >
+            <svg viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5 text-emerald-400">
+              <path d="M12.04 2C6.58 2 2.13 6.45 2.13 11.91C2.13 13.66 2.59 15.36 3.45 16.86L2.05 22L7.3 20.62C8.75 21.41 10.38 21.83 12.04 21.83C17.5 21.83 21.95 17.38 21.95 11.92C21.95 9.27 20.92 6.78 19.05 4.91C17.18 3.03 14.69 2 12.04 2M12.05 3.67C14.25 3.67 16.31 4.53 17.87 6.09C19.42 7.65 20.28 9.72 20.28 11.92C20.28 16.46 16.58 20.15 12.04 20.15C10.56 20.15 9.11 19.76 7.85 19.01L7.55 18.83L4.43 19.65L5.26 16.61L5.06 16.29C4.24 14.99 3.8 13.47 3.8 11.91C3.81 7.37 7.5 3.67 12.05 3.67M9.11 7.44C8.94 7.44 8.68 7.5 8.46 7.74C8.24 7.98 7.62 8.56 7.62 9.73C7.62 10.9 8.47 12.03 8.6 12.18C8.73 12.33 10.27 14.7 12.63 15.72C13.2 15.96 13.63 16.11 13.98 16.22C14.54 16.4 15.06 16.37 15.46 16.31C15.92 16.24 16.85 15.75 17.04 15.2C17.24 14.66 17.24 14.19 17.18 14.09C17.12 13.99 16.96 13.94 16.71 13.81C16.47 13.69 15.26 13.09 15.03 13.01C14.81 12.92 14.64 12.88 14.48 13.12C14.32 13.36 13.85 13.94 13.71 14.09C13.56 14.25 13.42 14.27 13.17 14.15C12.93 14.02 12.14 13.77 11.21 12.93C10.48 12.28 9.99 11.48 9.85 11.23C9.7 10.99 9.83 10.86 9.96 10.74C10.07 10.63 10.2 10.45 10.33 10.31C10.45 10.16 10.49 10.06 10.58 9.88C10.66 9.69 10.62 9.53 10.56 9.41C10.5 9.29 10.03 8.14 9.83 7.67C9.64 7.21 9.45 7.27 9.3 7.26C9.17 7.26 9.01 7.25 8.85 7.25" />
             </svg>
-          ) : (
-            <svg viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5 text-indigo-500">
-              <path fillRule="evenodd" d="M7.455 2.004a.75.75 0 0 1 .862.243 7.5 7.5 0 0 0 10.436 10.436.75.75 0 0 1 1.006.96 9.5 9.5 0 1 1-12.063-12.063a.75.75 0 0 1 .759.424Z" clipRule="evenodd" />
-            </svg>
-          )}
-        </button>
+            <span
+              className={`absolute top-1 right-1 w-2 h-2 rounded-full ring-1 ring-[var(--card)] ${
+                whatsappListo ? "bg-emerald-400" : "bg-slate-500"
+              }`}
+            />
+          </button>
+
+          <button
+            onClick={toggleTema}
+            title={tema === "oscuro" ? "Cambiar a Modo Claro" : "Cambiar a Modo Oscuro"}
+            className="p-1.5 rounded-md hover:bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
+          >
+            {tema === "oscuro" ? (
+              <svg viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5 text-amber-400">
+                <path d="M10 2a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0v-1.5A.75.75 0 0 1 10 2Zm0 13a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0v-1.5A.75.75 0 0 1 10 15Zm-8-5a.75.75 0 0 1 .75-.75h1.5a.75.75 0 0 1 0 1.5h-1.5A.75.75 0 0 1 2 10Zm13 0a.75.75 0 0 1 .75-.75h1.5a.75.75 0 0 1 0 1.5h-1.5A.75.75 0 0 1 15 10Zm-10.364-5.636a.75.75 0 0 1 1.06 0l1.061 1.06a.75.75 0 0 1-1.06 1.06l-1.06-1.06a.75.75 0 0 1 0-1.06Zm9.193 9.193a.75.75 0 0 1 1.06 0l1.06 1.061a.75.75 0 0 1-1.06 1.06l-1.06-1.061a.75.75 0 0 1 0-1.06ZM4.636 15.364a.75.75 0 0 1 0-1.06l1.06-1.061a.75.75 0 1 1 1.061 1.06l-1.06 1.061a.75.75 0 0 1-1.061 0Zm9.193-9.193a.75.75 0 0 1 0-1.06l1.061-1.06a.75.75 0 0 1 1.06 1.06l-1.06 1.061a.75.75 0 0 1-1.061 0ZM10 6.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Z" />
+              </svg>
+            ) : (
+              <svg viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5 text-indigo-500">
+                <path fillRule="evenodd" d="M7.455 2.004a.75.75 0 0 1 .862.243 7.5 7.5 0 0 0 10.436 10.436.75.75 0 0 1 1.006.96 9.5 9.5 0 1 1-12.063-12.063a.75.75 0 0 1 .759.424Z" clipRule="evenodd" />
+              </svg>
+            )}
+          </button>
+        </div>
       </header>
 
       {/* Fondo Traslúcido Móvil */}
@@ -247,8 +280,43 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           })}
         </nav>
 
-        {/* Perfil / Alternar Tema / Cierre de Sesión */}
+        {/* Perfil / WhatsApp / Alternar Tema / Cierre de Sesión */}
         <div className="p-3 border-t border-[var(--border)] shrink-0 space-y-2">
+          {/* Botón de Configuración de WhatsApp */}
+          <button
+            onClick={() => setModalWhatsAppOpen(true)}
+            className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-md text-xs font-medium bg-[var(--secondary)] border border-[var(--border)] text-[var(--foreground)] hover:bg-[var(--muted)] transition-colors ${
+              !sidebarOpen ? "md:justify-center" : ""
+            }`}
+            title="Configurar Alertas de WhatsApp por Stock Cero"
+          >
+            <div className="flex items-center gap-2 min-w-0">
+              <div className="relative shrink-0 flex items-center justify-center">
+                <svg viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4 text-emerald-400">
+                  <path d="M12.04 2C6.58 2 2.13 6.45 2.13 11.91C2.13 13.66 2.59 15.36 3.45 16.86L2.05 22L7.3 20.62C8.75 21.41 10.38 21.83 12.04 21.83C17.5 21.83 21.95 17.38 21.95 11.92C21.95 9.27 20.92 6.78 19.05 4.91C17.18 3.03 14.69 2 12.04 2M12.05 3.67C14.25 3.67 16.31 4.53 17.87 6.09C19.42 7.65 20.28 9.72 20.28 11.92C20.28 16.46 16.58 20.15 12.04 20.15C10.56 20.15 9.11 19.76 7.85 19.01L7.55 18.83L4.43 19.65L5.26 16.61L5.06 16.29C4.24 14.99 3.8 13.47 3.8 11.91C3.81 7.37 7.5 3.67 12.05 3.67M9.11 7.44C8.94 7.44 8.68 7.5 8.46 7.74C8.24 7.98 7.62 8.56 7.62 9.73C7.62 10.9 8.47 12.03 8.6 12.18C8.73 12.33 10.27 14.7 12.63 15.72C13.2 15.96 13.63 16.11 13.98 16.22C14.54 16.4 15.06 16.37 15.46 16.31C15.92 16.24 16.85 15.75 17.04 15.2C17.24 14.66 17.24 14.19 17.18 14.09C17.12 13.99 16.96 13.94 16.71 13.81C16.47 13.69 15.26 13.09 15.03 13.01C14.81 12.92 14.64 12.88 14.48 13.12C14.32 13.36 13.85 13.94 13.71 14.09C13.56 14.25 13.42 14.27 13.17 14.15C12.93 14.02 12.14 13.77 11.21 12.93C10.48 12.28 9.99 11.48 9.85 11.23C9.7 10.99 9.83 10.86 9.96 10.74C10.07 10.63 10.2 10.45 10.33 10.31C10.45 10.16 10.49 10.06 10.58 9.88C10.66 9.69 10.62 9.53 10.56 9.41C10.5 9.29 10.03 8.14 9.83 7.67C9.64 7.21 9.45 7.27 9.3 7.26C9.17 7.26 9.01 7.25 8.85 7.25" />
+                </svg>
+                <span
+                  className={`absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full ${
+                    whatsappListo ? "bg-emerald-400" : "bg-slate-500"
+                  }`}
+                />
+              </div>
+              <span className={`truncate ${!sidebarOpen ? "md:hidden" : ""}`}>
+                Alertas WhatsApp
+              </span>
+            </div>
+            {sidebarOpen && (
+              <span
+                className={`text-[9px] px-1.5 py-0.5 rounded font-semibold ${
+                  whatsappListo
+                    ? "bg-emerald-500/15 text-emerald-400 border border-emerald-500/30"
+                    : "bg-slate-700/50 text-slate-400"
+                }`}
+              >
+                {whatsappListo ? "ACTIVO" : "OFF"}
+              </span>
+            )}
+          </button>
           {/* Botón de Cambiar Tema (Oscuro / Claro) */}
           <button
             onClick={toggleTema}
@@ -317,6 +385,14 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           <p>© 2026 Sistema. Desarrollado por estudiantes de la <strong>Universidad Luterana Salvadoreña (ULS)</strong>.</p>
         </footer>
       </main>
+
+      {/* Modal de Configuración de WhatsApp */}
+      <ModalConfigWhatsApp
+        isOpen={modalWhatsAppOpen}
+        onClose={() => setModalWhatsAppOpen(false)}
+        configActual={whatsAppConfig}
+        onGuardar={actualizarWhatsAppConfig}
+      />
     </div>
   );
 }
