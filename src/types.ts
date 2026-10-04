@@ -87,3 +87,31 @@ export interface MovimientoInventario {
   notas?: string;
 }
 
+export interface WhatsAppConfig {
+  activo: boolean;
+  instanceId: string;
+  token: string;
+  tipoDestinatario: "individual" | "grupo";
+  destinatario: string; // Número internacional (ej: 50212345678) o Group ID (ej: 1203630...@g.us)
+  notificarStockMinimo?: boolean;
+}
+
+export interface WhatsAppNotificationPayload {
+  repuestoNombre: string;
+  repuestoCodigo: string;
+  sucursal: Sucursal;
+  cantidadSalida: number;
+  stockAnterior: number;
+  stockResultante: number;
+  motivo: string;
+  folioReferencia?: string;
+  usuarioNombre: string;
+  fecha: string;
+}
+
+export interface WhatsAppSendResult {
+  ok: boolean;
+  messageId?: string;
+  error?: string;
+}
+
