@@ -1,5 +1,17 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from "react";
-import type { Usuario, Repuesto, Herramienta, MovimientoInventario, TipoMovimiento } from "./types";
+import type {
+  Usuario,
+  Repuesto,
+  Herramienta,
+  MovimientoInventario,
+  TipoMovimiento,
+  WhatsAppConfig,
+} from "./types";
+import {
+  getWhatsAppConfig,
+  saveWhatsAppConfig,
+  enviarAlertaStockCero,
+} from "./lib/whatsappService";
 import {
   usuariosIniciales,
   repuestosIniciales,
@@ -73,6 +85,8 @@ interface AppState {
   editarUsuario: (u: Usuario) => Promise<void>;
   toggleUsuario: (id: string) => Promise<void>;
   eliminarUsuario: (id: string) => Promise<void>;
+  whatsAppConfig: WhatsAppConfig;
+  actualizarWhatsAppConfig: (config: WhatsAppConfig) => void;
 }
 
 // Helpers para gestión de sesión en Cookies de navegador (Formato JSON codificado con SameSite=Strict)
@@ -161,6 +175,26 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [supabaseConectado, setSupabaseConectado] = useState(isSupabaseConfigured);
   const [sincronizando, setSincronizando] = useState(false);
   const [diagnostico, setDiagnostico] = useState<ConnectionDiagnostic | null>(null);
+
+  // Configuración de WhatsApp
+  const [whatsAppConfig, setWhatsAppConfigState] = useState<WhatsAppConfig>(getWhatsAppConfig);
+
+  useEffect(() => {
+    const handleConfigChange = (e: any) => {
+      if (e.detail) {
+        setWhatsAppConfigState(e.detail);
+      }
+    };
+    window.addEventListener("genesis_whatsapp_config_changed", handleConfigChange);
+    return () => {
+      window.removeEventListener("genesis_whatsapp_config_changed", handleConfigChange);
+    };
+  }, []);
+
+  const actualizarWhatsAppConfig = (nuevaConfig: WhatsAppConfig) => {
+    saveWhatsAppConfig(nuevaConfig);
+    setWhatsAppConfigState(nuevaConfig);
+  };
 
   const uid = () => `id_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 
@@ -325,6 +359,26 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   };
 
   const editarRepuesto = async (r: Repuesto) => {
+    const anterior = repuestos.find((x) => x.id === r.id);
+    if (
+      whatsAppConfig.activo &&
+      anterior &&
+      anterior.existencia > 0 &&
+      r.existencia <= 0
+    ) {
+      enviarAlertaStockCero({
+        repuestoNombre: r.nombre,
+        repuestoCodigo: r.codigo,
+        sucursal: r.sucursal,
+        cantidadSalida: anterior.existencia - r.existencia,
+        stockAnterior: anterior.existencia,
+        stockResultante: r.existencia,
+        motivo: "Ajuste directo de stock a 0",
+        usuarioNombre: usuarioActual?.nombre || "Sistema",
+        fecha: new Date().toLocaleString(),
+      }).catch((e) => console.warn("Error enviando alerta WhatsApp en edición:", e));
+    }
+
     setRepuestos((prev) => prev.map((x) => (x.id === r.id ? r : x)));
     if (isSupabaseConfigured && supabase) {
       setSincronizando(true);
@@ -447,6 +501,41 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         usuarioNombre: usuarioActual.nombre,
         notas,
       }).catch((e) => console.error("Error al persistir en Supabase:", e));
+    }
+
+    // Alerta automática a WhatsApp cuando el producto se agota (stock llega a 0)
+    if (whatsAppConfig.activo && stockAnterior > 0 && nuevoStock <= 0) {
+      enviarAlertaStockCero({
+        repuestoNombre: rep.nombre,
+        repuestoCodigo: rep.codigo,
+        sucursal: rep.sucursal,
+        cantidadSalida: cantidad,
+        stockAnterior,
+        stockResultante: nuevoStock,
+        motivo,
+        folioReferencia,
+        usuarioNombre: usuarioActual.nombre,
+        fecha: fechaStr,
+      }).catch((err) => console.warn("Error enviando alerta WhatsApp al agotar stock:", err));
+    } else if (
+      whatsAppConfig.activo &&
+      whatsAppConfig.notificarStockMinimo &&
+      stockAnterior > rep.stockMinimo &&
+      nuevoStock <= rep.stockMinimo &&
+      nuevoStock > 0
+    ) {
+      enviarAlertaStockCero({
+        repuestoNombre: `${rep.nombre} (Stock Mínimo Alcanzado)`,
+        repuestoCodigo: rep.codigo,
+        sucursal: rep.sucursal,
+        cantidadSalida: cantidad,
+        stockAnterior,
+        stockResultante: nuevoStock,
+        motivo: `Umbral de seguridad alcanzado (${rep.stockMinimo} u.) - ${motivo}`,
+        folioReferencia,
+        usuarioNombre: usuarioActual.nombre,
+        fecha: fechaStr,
+      }).catch((err) => console.warn("Error enviando alerta WhatsApp de stock mínimo:", err));
     }
 
     return { ok: true };
@@ -588,6 +677,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         editarUsuario,
         toggleUsuario,
         eliminarUsuario,
+        whatsAppConfig,
+        actualizarWhatsAppConfig,
       }}
     >
       {children}
