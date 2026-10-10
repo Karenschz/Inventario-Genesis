@@ -1,4 +1,5 @@
 import { supabase, isSupabaseConfigured } from "./supabase";
+import { createClient } from "@supabase/supabase-js";
 import type {
   Repuesto,
   Herramienta,
@@ -683,6 +684,22 @@ export async function dbLoginUsuario(
 
       if (byEmail && (byEmail.password_hash === pass || !byEmail.password_hash)) {
         userData = byEmail;
+
+        // Auto-registro automático en Supabase Auth si el usuario no existe aún en auth.users
+        if (!authUser) {
+          try {
+            const { data: newAuth } = await supabase.auth.signUp({
+              email: cleanEmail,
+              password: pass,
+            });
+            if (newAuth?.user) {
+              authUser = newAuth.user;
+            }
+          } catch (e) {
+            console.warn("Aviso en auto-registro diferido en Supabase Auth:", e);
+          }
+        }
+
         if (authUser?.id) {
           try {
             await supabase
@@ -713,6 +730,7 @@ export async function dbLoginUsuario(
       rol: userData.rol,
       sucursal: mapSucursalId(userData.sucursal_id),
       activo: Boolean(userData.activo),
+      passwordTemporal: Boolean(userData.password_temporal),
     };
 
     return { ok: true, usuario: u };
@@ -738,12 +756,15 @@ export async function dbFetchUsuarios(): Promise<Usuario[]> {
     rol: row.rol,
     sucursal: mapSucursalId(row.sucursal_id),
     activo: Boolean(row.activo),
+    passwordTemporal: Boolean(row.password_temporal),
   }));
 }
 
 // 10. Crear usuario validado en Supabase Auth y registrado en la BD
-export async function dbCrearUsuario(u: Omit<Usuario, "id">): Promise<string | null> {
-  if (!supabase) return null;
+export async function dbCrearUsuario(
+  u: Omit<Usuario, "id">
+): Promise<{ id?: string; error?: string }> {
+  if (!supabase) return { error: "Supabase no está configurado." };
 
   const cleanEmail = u.email.trim().toLowerCase();
 
@@ -753,11 +774,21 @@ export async function dbCrearUsuario(u: Omit<Usuario, "id">): Promise<string | n
     // Si la función RPC no existe, continuamos
   }
 
-  let authUserId: string | null = null;
-
-  // 1. Crear el usuario en Supabase Authentication
+  // No crear un perfil si Supabase Auth rechazó el alta.
+  let authUserId: string;
   try {
-    const { data: signUpData, error: signUpErr } = await supabase.auth.signUp({
+    const authCreationClient = createClient(
+      import.meta.env.VITE_SUPABASE_URL,
+      import.meta.env.VITE_SUPABASE_ANON_KEY,
+      {
+        auth: {
+          persistSession: false,
+          autoRefreshToken: false,
+          detectSessionInUrl: false,
+        },
+      }
+    );
+    const { data: signUpData, error: signUpErr } = await authCreationClient.auth.signUp({
       email: cleanEmail,
       password: u.password,
       options: {
@@ -770,12 +801,22 @@ export async function dbCrearUsuario(u: Omit<Usuario, "id">): Promise<string | n
     });
 
     if (signUpErr) {
-      console.warn("Aviso al crear en Supabase Auth (signUp):", signUpErr.message);
-    } else if (signUpData?.user) {
-      authUserId = signUpData.user.id;
+      console.error("Supabase Auth rechazó la creación del usuario:", signUpErr);
+      return { error: signUpErr.message };
     }
+
+    if (!signUpData.user) {
+      return { error: "Supabase Auth no devolvió la cuenta creada." };
+    }
+    if (signUpData.user.identities?.length === 0) {
+      return { error: "Ya existe una cuenta de autenticación con este correo." };
+    }
+    authUserId = signUpData.user.id;
   } catch (authEx) {
-    console.warn("Excepción al registrar en Supabase Auth:", authEx);
+    console.error("Excepción al registrar en Supabase Auth:", authEx);
+    return {
+      error: authEx instanceof Error ? authEx.message : "No se pudo crear la cuenta en Supabase Auth.",
+    };
   }
 
   // 2. Insertar perfil en la tabla 'usuarios'
@@ -788,9 +829,7 @@ export async function dbCrearUsuario(u: Omit<Usuario, "id">): Promise<string | n
     activo: u.activo,
   };
 
-  if (authUserId) {
-    payload.auth_id = authUserId;
-  }
+  payload.auth_id = authUserId;
 
   const { data, error } = await supabase
     .from("usuarios")
@@ -807,30 +846,43 @@ export async function dbCrearUsuario(u: Omit<Usuario, "id">): Promise<string | n
     } else {
       console.error("Error creando usuario en Supabase:", error);
     }
-    return null;
+    return { error: `La cuenta Auth se creó, pero no se pudo guardar su perfil: ${error.message}` };
   }
-  return String(data.id);
+  return { id: String(data.id) };
 }
 
 // 11. Actualizar usuario en Supabase
 export async function dbActualizarUsuario(u: Usuario): Promise<boolean> {
   if (!supabase) return false;
-  const numId = parseInt(u.id);
-  if (isNaN(numId)) return false;
+  const numId = parseInt(u.id, 10);
+  const isNum = !isNaN(numId);
+  const cleanEmail = u.email.trim().toLowerCase();
+
   const payload: Record<string, unknown> = {
     sucursal_id: unmapSucursalId(u.sucursal),
-    nombre: u.nombre,
-    email: u.email,
+    nombre: u.nombre.trim(),
+    email: cleanEmail,
     rol: u.rol,
     activo: u.activo,
   };
-  if (u.password) payload.password_hash = u.password;
-  const { error } = await supabase.from("usuarios").update(payload).eq("id", numId);
-  if (error) {
-    console.error("Error actualizando usuario en Supabase:", error);
-    return false;
+  if (u.password) {
+    payload.password_hash = u.password;
+    payload.password_temporal = false;
   }
-  return true;
+
+  try {
+    if (isNum) {
+      const { error } = await supabase.from("usuarios").update(payload).eq("id", numId);
+      if (!error) return true;
+    }
+    if (cleanEmail) {
+      const { error } = await supabase.from("usuarios").update(payload).ilike("email", cleanEmail);
+      if (!error) return true;
+    }
+  } catch (e) {
+    console.error("Error al actualizar usuario en Supabase:", e);
+  }
+  return false;
 }
 
 // 12. Activar / Desactivar usuario en Supabase
@@ -889,7 +941,166 @@ export async function dbEliminarUsuario(id: string, email?: string): Promise<boo
   }
 }
 
-// 14. Inicializar / Poblar Base de Datos Completa
+// 14. Solicitar recuperación de contraseña (envía enlace de Supabase Auth)
+export async function dbSolicitarRecuperacionPassword(
+  email: string
+): Promise<{ ok: boolean; error?: string; usuario?: { id: string; nombre: string; email: string }; authResent?: boolean }> {
+  if (!supabase) return { ok: false, error: "Base de datos Supabase no configurada." };
+
+  const cleanEmail = email.trim().toLowerCase();
+
+  try {
+    const { data: usuario, error: errBusqueda } = await supabase
+      .from("usuarios")
+      .select("id, nombre, email, activo")
+      .ilike("email", cleanEmail)
+      .maybeSingle();
+
+    if (errBusqueda) {
+      console.error("Error al buscar usuario para recuperación:", errBusqueda);
+      return { ok: false, error: "Error al consultar la base de datos." };
+    }
+
+    if (!usuario) {
+      return { ok: false, error: "No se encontró ningún empleado registrado con este correo electrónico." };
+    }
+
+    if (!usuario.activo) {
+      return { ok: false, error: "La cuenta de este empleado se encuentra inactiva. Contacta al gerente." };
+    }
+
+    // Omitir redirectTo usa el Site URL permitido configurado en Supabase Auth.
+    const { error: resetError } = await supabase.auth.resetPasswordForEmail(cleanEmail);
+    if (resetError) {
+      console.error("Error de Supabase Auth al enviar recuperación:", resetError);
+      return {
+        ok: false,
+        error: resetError.message,
+        usuario: {
+          id: String(usuario.id),
+          nombre: usuario.nombre,
+          email: usuario.email,
+        },
+        authResent: false,
+      };
+    }
+
+    return {
+      ok: true,
+      usuario: {
+        id: String(usuario.id),
+        nombre: usuario.nombre,
+        email: usuario.email,
+      },
+      authResent: true,
+    };
+  } catch (err: any) {
+    console.error("Excepción en dbSolicitarRecuperacionPassword:", err);
+    return { ok: false, error: "Ocurrió un error inesperado al procesar la solicitud." };
+  }
+}
+
+// 15. Cambiar contraseña definitiva
+export async function dbCambiarPasswordUsuario(
+  id: string,
+  nuevaPassword: string,
+  email?: string
+): Promise<{ ok: boolean; error?: string }> {
+  if (!supabase) return { ok: false, error: "Base de datos Supabase no configurada." };
+
+  const cleanPass = nuevaPassword.trim();
+  const numId = parseInt(id, 10);
+  const isNum = !isNaN(numId);
+  const cleanEmail = email ? email.trim().toLowerCase() : "";
+
+  try {
+    let authUserId: string | undefined;
+    try {
+      const { data: authSession } = await supabase.auth.getSession();
+      const authUserEmail = authSession?.session?.user?.email?.trim().toLowerCase();
+      if (authUserEmail && cleanEmail && authUserEmail === cleanEmail) {
+        authUserId = authSession.session?.user?.id;
+        const { error: authUpdateError } = await supabase.auth.updateUser({ password: cleanPass });
+        if (authUpdateError) {
+          return { ok: false, error: authUpdateError.message || "Supabase Auth no pudo actualizar la contraseña." };
+        }
+      }
+    } catch (e) {
+      console.error("No se pudo actualizar la contraseña en Supabase Auth:", e);
+      return { ok: false, error: "No se pudo validar la sesión de recuperación. Solicita un enlace nuevo." };
+    }
+
+    // Vincular el perfil con Auth solo si la columna existe, pero no bloquear
+    // el flujo si el usuario ya existe en Auth y el registro del perfil está incompleto.
+    const passwordUpdate: Record<string, unknown> = {
+      password_hash: cleanPass,
+      password_temporal: false,
+    };
+    const payloadVariants: Record<string, unknown>[] = [
+      { ...passwordUpdate, ...(authUserId ? { auth_id: authUserId } : {}) },
+      { ...passwordUpdate },
+    ];
+    let actualizado = false;
+
+    const tryProfileUpdate = async (mode: "id" | "email") => {
+      const isIdMode = mode === "id";
+
+      for (const payload of payloadVariants) {
+        const res = await (isIdMode
+          ? supabase.from("usuarios").update(payload).eq("id", numId).select("id").maybeSingle()
+          : supabase.from("usuarios").update(payload).ilike("email", cleanEmail).select("id").maybeSingle());
+
+        if (!res.error && res.data) {
+          return true;
+        }
+
+        const fallbackRes = await (isIdMode
+          ? supabase
+              .from("usuarios")
+              .upsert({ id: numId, ...(cleanEmail ? { email: cleanEmail } : {}), ...payload }, { onConflict: "id" })
+              .select("id")
+              .maybeSingle()
+          : supabase
+              .from("usuarios")
+              .upsert({ ...(cleanEmail ? { email: cleanEmail } : {}), ...payload }, { onConflict: "email" })
+              .select("id")
+              .maybeSingle());
+
+        if (!fallbackRes.error && fallbackRes.data) {
+          return true;
+        }
+
+        if (fallbackRes.error) {
+          console.error(`Error al actualizar perfil por ${mode} con payload:`, fallbackRes.error);
+        }
+      }
+
+      return false;
+    };
+
+    if (isNum) {
+      actualizado = await tryProfileUpdate("id");
+    }
+
+    if (!actualizado && cleanEmail) {
+      actualizado = await tryProfileUpdate("email");
+    }
+
+    if (!actualizado) {
+      const errorDetails =
+        "Supabase Auth actualizó la contraseña, pero no se pudo actualizar el perfil del usuario. " +
+        "Revisa que exista el registro del usuario y que la tabla usuarios tenga las columnas requeridas.";
+      return { ok: false, error: errorDetails };
+    }
+
+    return { ok: true };
+  } catch (err: any) {
+    console.error("Excepción en dbCambiarPasswordUsuario:", err);
+    return { ok: false, error: "Error inesperado al cambiar contraseña." };
+  }
+}
+
+// 16. Inicializar / Poblar Base de Datos Completa
 export async function dbSembrarDatosIniciales(): Promise<{ ok: boolean; message: string }> {
   if (!supabase) return { ok: false, message: "Supabase no está configurado." };
 

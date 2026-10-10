@@ -1,6 +1,6 @@
 export type Rol = "gerente" | "vendedor";
 export type Sucursal = "sucursal1" | "sucursal2";
-export type EstadoHerramienta = "disponible" | "en_uso";
+export type EstadoHerramienta = "disponible" | "en_uso" | "en_reparacion" | "dañado";
 export type CategoriaRepuesto =
   | "Motor"
   | "Transmisión"
@@ -19,6 +19,7 @@ export type CategoriaHerramienta =
   | "Diagnóstico"
   | "Elevación"
   | "Medición"
+  | "Mobiliario"
   | "Otro";
 
 export interface Usuario {
@@ -29,6 +30,30 @@ export interface Usuario {
   rol: Rol;
   sucursal: Sucursal;
   activo: boolean;
+  passwordTemporal?: boolean;
+}
+
+export type ProveedorEmail = "resend" | "emailjs" | "webhook" | "simulado";
+
+export interface EmailConfig {
+  activo: boolean;
+  proveedor: ProveedorEmail;
+  resendApiKey?: string;
+  resendFromEmail?: string;
+  emailjsServiceId?: string;
+  emailjsTemplateId?: string;
+  emailjsPublicKey?: string;
+  webhookUrl?: string;
+}
+
+export interface PasswordRecoveryResult {
+  ok: boolean;
+  error?: string;
+  emailEnviado?: boolean;
+  passwordTemporal?: string;
+  proveedor?: string;
+  destinatario?: string;
+  mensaje?: string;
 }
 
 export interface Repuesto {
@@ -54,6 +79,7 @@ export interface Herramienta {
   categoria: CategoriaHerramienta;
   sucursal: Sucursal;
   estado: EstadoHerramienta;
+  precio?: number;
   asignadoA?: string;
   fechaAsignacion?: string;
   notas?: string;

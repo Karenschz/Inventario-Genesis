@@ -6,12 +6,17 @@ import type {
   MovimientoInventario,
   TipoMovimiento,
   WhatsAppConfig,
+  PasswordRecoveryResult,
 } from "./types";
 import {
   getWhatsAppConfig,
   saveWhatsAppConfig,
   enviarAlertaStockCero,
 } from "./lib/whatsappService";
+import {
+  enviarCorreoRecuperacion,
+} from "./lib/emailService";
+
 import {
   usuariosIniciales,
   repuestosIniciales,
@@ -38,6 +43,8 @@ import {
   dbProbarConexion,
   dbSembrarDatosIniciales,
   dbLoginUsuario,
+  dbSolicitarRecuperacionPassword,
+  dbCambiarPasswordUsuario,
   type ConnectionDiagnostic,
 } from "./lib/supabaseService";
 
@@ -81,12 +88,57 @@ interface AppState {
   agregarHerramienta: (h: Omit<Herramienta, "id">) => Promise<void>;
   editarHerramienta: (h: Herramienta) => Promise<void>;
   eliminarHerramienta: (id: string) => Promise<void>;
-  agregarUsuario: (u: Omit<Usuario, "id">) => Promise<void>;
+  agregarUsuario: (u: Omit<Usuario, "id">) => Promise<{ ok: boolean; error?: string }>;
   editarUsuario: (u: Usuario) => Promise<void>;
   toggleUsuario: (id: string) => Promise<void>;
   eliminarUsuario: (id: string) => Promise<void>;
   whatsAppConfig: WhatsAppConfig;
   actualizarWhatsAppConfig: (config: WhatsAppConfig) => void;
+  debeCambiarPassword: boolean;
+  setDebeCambiarPassword: (debe: boolean) => void;
+  solicitarRecuperacionPassword: (email: string) => Promise<PasswordRecoveryResult>;
+  cambiarMiPassword: (nuevaPassword: string, conservarRecuperacion?: boolean) => Promise<{ ok: boolean; error?: string }>;
+}
+
+// Helpers para rastreo de contraseñas temporales activas
+const TEMP_USERS_STORAGE_KEY = "GENESIS_TEMP_USERS";
+
+function marcarUsuarioConPassTemporal(email: string) {
+  try {
+    const raw = localStorage.getItem(TEMP_USERS_STORAGE_KEY);
+    const set: string[] = raw ? JSON.parse(raw) : [];
+    const clean = email.trim().toLowerCase();
+    if (!set.includes(clean)) {
+      set.push(clean);
+      localStorage.setItem(TEMP_USERS_STORAGE_KEY, JSON.stringify(set));
+    }
+  } catch {
+    // Ignorar
+  }
+}
+
+function esUsuarioConPassTemporal(email: string): boolean {
+  try {
+    const raw = localStorage.getItem(TEMP_USERS_STORAGE_KEY);
+    if (!raw) return false;
+    const set: string[] = JSON.parse(raw);
+    return set.includes(email.trim().toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
+function desmarcarUsuarioConPassTemporal(email: string) {
+  try {
+    const raw = localStorage.getItem(TEMP_USERS_STORAGE_KEY);
+    if (!raw) return;
+    const set: string[] = JSON.parse(raw);
+    const clean = email.trim().toLowerCase();
+    const filtrado = set.filter((x) => x !== clean);
+    localStorage.setItem(TEMP_USERS_STORAGE_KEY, JSON.stringify(filtrado));
+  } catch {
+    // Ignorar
+  }
 }
 
 // Helpers para gestión de sesión en Cookies de navegador (Formato JSON codificado con SameSite=Strict)
@@ -153,7 +205,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     try {
       const saved = localStorage.getItem("genesis_tema_modo");
       if (saved === "claro" || saved === "oscuro") return saved;
-    } catch {}
+    } catch { }
     return "oscuro";
   });
 
@@ -165,7 +217,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       } else {
         document.documentElement.setAttribute("data-theme", "dark");
       }
-    } catch {}
+    } catch { }
   }, [tema]);
 
   const toggleTema = useCallback(() => {
@@ -196,11 +248,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setWhatsAppConfigState(nuevaConfig);
   };
 
+  const [debeCambiarPassword, setDebeCambiarPassword] = useState(false);
+
   const uid = () => `id_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 
   // Función para sincronizar datos directamente desde Supabase
   const sincronizarConSupabase = useCallback(async () => {
     if (!isSupabaseConfigured || !supabase) return;
+    const client = supabase;
     setSincronizando(true);
 
     try {
@@ -223,9 +278,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       if (dbUsers.status === "fulfilled") {
         // Purga preventiva en Supabase para asegurar borrado físico de Ana (id: 2) y Roberto (id: 3)
         try {
-          await supabase.from("movimientos_kardex").update({ usuario_id: null }).in("usuario_id", [2, 3]);
-          await supabase.from("usuarios").delete().in("id", [2, 3]);
-          await supabase.from("usuarios").delete().eq("activo", false);
+          await client.from("movimientos_kardex").update({ usuario_id: null }).in("usuario_id", [2, 3]);
+          await client.from("usuarios").delete().in("id", [2, 3]);
+          await client.from("usuarios").delete().eq("activo", false);
         } catch {
           // Ignorar si ya fueron eliminados
         }
@@ -271,17 +326,65 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
   }, [sincronizarConSupabase]);
 
-  // Carga inicial al montar el componente
+  // Carga inicial al montar el componente y escucha de recuperación de contraseña
   useEffect(() => {
-    try {
-      localStorage.clear();
-    } catch {
-      // Ignorar si el almacenamiento está restringido
-    }
-
     if (isSupabaseConfigured && supabase) {
+      const client = supabase;
       sincronizarConSupabase();
       probarConexion();
+
+      const { data: authListener } = client.auth.onAuthStateChange(
+        async (event, session) => {
+          const isRecovery =
+            event === "PASSWORD_RECOVERY" ||
+            (typeof window !== "undefined" &&
+              (window.location.hash.includes("type=recovery") ||
+                window.location.search.includes("type=recovery")));
+
+          if (isRecovery) {
+            setUsuarioActual(null);
+            eliminarSesionCookie();
+            try {
+              sessionStorage.removeItem("usuario_genesis_sesion");
+            } catch {
+              // Ignorar
+            }
+
+            if (session?.user?.email) {
+              const cleanEmail = session.user.email.trim().toLowerCase();
+              try {
+                const { data: dbUser } = await client
+                  .from("usuarios")
+                  .select("*")
+                  .ilike("email", cleanEmail)
+                  .maybeSingle();
+
+                if (dbUser) {
+                  const usuarioRecuperacion: Usuario = {
+                    id: String(dbUser.id),
+                    nombre: dbUser.nombre,
+                    email: dbUser.email,
+                    password: "",
+                    rol: dbUser.rol,
+                    sucursal: dbUser.sucursal_id === 2 ? "sucursal2" : "sucursal1",
+                    activo: Boolean(dbUser.activo),
+                    passwordTemporal: true,
+                  };
+                  setUsuarioActual(usuarioRecuperacion);
+                  guardarSesionCookie(usuarioRecuperacion);
+                }
+              } catch (e) {
+                console.warn("Aviso al cargar perfil en recuperación:", e);
+              }
+            }
+            setDebeCambiarPassword(true);
+          }
+        }
+      );
+
+      return () => {
+        authListener?.subscription?.unsubscribe();
+      };
     }
   }, [sincronizarConSupabase, probarConexion]);
 
@@ -292,9 +395,18 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (isSupabaseConfigured && supabase) {
       const res = await dbLoginUsuario(email, password);
       if (res.ok && res.usuario) {
-        setUsuarioActual(res.usuario);
+        const esTemporal = Boolean(res.usuario.passwordTemporal) || esUsuarioConPassTemporal(email);
+        const usuarioConTemporal: Usuario = {
+          ...res.usuario,
+          passwordTemporal: esTemporal,
+        };
+        setUsuarioActual(usuarioConTemporal);
+        if (esTemporal) {
+          setDebeCambiarPassword(true);
+        }
+        guardarSesionCookie(usuarioConTemporal);
         try {
-          sessionStorage.setItem("usuario_genesis_sesion", JSON.stringify(res.usuario));
+          sessionStorage.setItem("usuario_genesis_sesion", JSON.stringify(usuarioConTemporal));
         } catch {
           // Ignorar
         }
@@ -312,9 +424,18 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         x.activo
     );
     if (u) {
-      setUsuarioActual(u);
+      const esTemporal = Boolean(u.passwordTemporal) || esUsuarioConPassTemporal(email);
+      const usuarioConTemporal: Usuario = {
+        ...u,
+        passwordTemporal: esTemporal,
+      };
+      setUsuarioActual(usuarioConTemporal);
+      if (esTemporal) {
+        setDebeCambiarPassword(true);
+      }
+      guardarSesionCookie(usuarioConTemporal);
       try {
-        sessionStorage.setItem("usuario_genesis_sesion", JSON.stringify(u));
+        sessionStorage.setItem("usuario_genesis_sesion", JSON.stringify(usuarioConTemporal));
       } catch {
         // Ignorar
       }
@@ -326,13 +447,163 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const logout = () => {
     setUsuarioActual(null);
+    setDebeCambiarPassword(false);
     setVistaActual("dashboard");
+    eliminarSesionCookie();
     try {
       sessionStorage.removeItem("usuario_genesis_sesion");
-      localStorage.clear();
+      localStorage.removeItem("usuario_genesis_sesion");
     } catch {
       // Ignorar
     }
+  };
+
+  const solicitarRecuperacionPassword = async (
+    email: string
+  ): Promise<PasswordRecoveryResult> => {
+    const cleanEmail = email.trim().toLowerCase();
+    if (!cleanEmail) {
+      return { ok: false, error: "Ingresa un correo electrónico válido." };
+    }
+
+    let nombreUsuario = "Empleado";
+
+    if (isSupabaseConfigured && supabase) {
+      setSincronizando(true);
+      try {
+        const resDb = await dbSolicitarRecuperacionPassword(cleanEmail);
+        if (!resDb.ok || !resDb.usuario) {
+          return { ok: false, error: resDb.error || "No se pudo generar la recuperación." };
+        }
+        nombreUsuario = resDb.usuario.nombre;
+
+        return {
+          ok: true,
+          emailEnviado: Boolean(resDb.authResent),
+          proveedor: resDb.authResent ? "supabase-auth" : "supabase-auth-failed",
+          destinatario: cleanEmail,
+          mensaje: resDb.authResent
+            ? "Se envió la recuperación por Supabase Auth. Revisa tu correo registrado."
+            : "La recuperación fue creada, pero no se pudo enviar el correo por Supabase Auth.",
+        };
+      } catch (err: any) {
+        console.error("Error al procesar recuperación en Supabase:", err);
+        return { ok: false, error: "Error de conexión al procesar la solicitud." };
+      } finally {
+        setSincronizando(false);
+      }
+    }
+
+    // Fallback offline / local
+    const caracteres = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    let randomStr = "";
+    for (let i = 0; i < 6; i++) {
+      randomStr += caracteres.charAt(Math.floor(Math.random() * caracteres.length));
+    }
+    const passTemporal = `Tmp-${randomStr}`;
+
+    const u = usuarios.find(
+      (x) => x.email.trim().toLowerCase() === cleanEmail
+    );
+    if (!u) {
+      return { ok: false, error: "No se encontró ningún empleado registrado con este correo electrónico." };
+    }
+    if (!u.activo) {
+      return { ok: false, error: "La cuenta de este empleado se encuentra inactiva." };
+    }
+
+    nombreUsuario = u.nombre;
+    marcarUsuarioConPassTemporal(cleanEmail);
+    setUsuarios((prev) =>
+      prev.map((x) =>
+        x.email.trim().toLowerCase() === cleanEmail
+          ? { ...x, password: passTemporal, passwordTemporal: true }
+          : x
+      )
+    );
+
+    const resEnvio = await enviarCorreoRecuperacion(
+      cleanEmail,
+      nombreUsuario,
+      passTemporal
+    );
+
+    return {
+      ok: true,
+      emailEnviado: resEnvio.emailEnviado,
+      passwordTemporal: passTemporal,
+      proveedor: resEnvio.proveedor,
+      destinatario: cleanEmail,
+      mensaje: resEnvio.mensaje,
+    };
+  };
+
+  const cambiarMiPassword = async (
+    nuevaPassword: string,
+    conservarRecuperacion = false
+  ): Promise<{ ok: boolean; error?: string }> => {
+    const cleanPass = nuevaPassword.trim();
+    if (!cleanPass || cleanPass.length < 6) {
+      return { ok: false, error: "La contraseña debe tener al menos 6 caracteres." };
+    }
+
+    let usuarioId = usuarioActual?.id;
+    let usuarioEmail = usuarioActual?.email;
+    if ((!usuarioId || !usuarioEmail) && isSupabaseConfigured && supabase) {
+      const { data, error } = await supabase.auth.getUser();
+      if (error || !data.user?.email) {
+        return { ok: false, error: "El enlace de recuperación expiró o ya fue utilizado. Solicita uno nuevo." };
+      }
+      usuarioId = data.user.id;
+      usuarioEmail = data.user.email;
+    }
+    if (!usuarioId || !usuarioEmail) {
+      return { ok: false, error: "No hay una sesión válida para restablecer la contraseña." };
+    }
+
+    if (isSupabaseConfigured && supabase) {
+      setSincronizando(true);
+      try {
+        const resDb = await dbCambiarPasswordUsuario(usuarioId, cleanPass, usuarioEmail);
+        if (!resDb.ok) {
+          return { ok: false, error: resDb.error || "No se pudo actualizar la contraseña." };
+        }
+      } catch (e: any) {
+        console.error("Error cambiando contraseña en Supabase:", e);
+        return { ok: false, error: "Error de conexión al actualizar la contraseña." };
+      } finally {
+        setSincronizando(false);
+      }
+    }
+
+    // Actualizar usuario actual y lista local
+    desmarcarUsuarioConPassTemporal(usuarioEmail);
+    if (usuarioActual) {
+      const usuarioActualizado: Usuario = {
+        ...usuarioActual,
+        password: cleanPass,
+        passwordTemporal: false,
+      };
+      setUsuarioActual(usuarioActualizado);
+      guardarSesionCookie(usuarioActualizado);
+
+      try {
+        sessionStorage.setItem("usuario_genesis_sesion", JSON.stringify(usuarioActualizado));
+      } catch {
+        // Ignorar
+      }
+
+      setUsuarios((prev) =>
+        prev.map((u) =>
+          u.id === usuarioActual.id || u.email.trim().toLowerCase() === usuarioActual.email.trim().toLowerCase()
+            ? usuarioActualizado
+            : u
+        )
+      );
+    }
+    if (!conservarRecuperacion) setDebeCambiarPassword(false);
+
+    return { ok: true };
   };
 
   const setVista = (v: View) => setVistaActual(v);
@@ -570,26 +841,30 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   };
 
   // Usuarios
-  const agregarUsuario = async (u: Omit<Usuario, "id">) => {
-    const localId = uid();
-    setUsuarios((prev) => [...prev, { ...u, id: localId }]);
+  const agregarUsuario = async (
+    u: Omit<Usuario, "id">
+  ): Promise<{ ok: boolean; error?: string }> => {
     if (isSupabaseConfigured && supabase) {
       setSincronizando(true);
       try {
-        const dbId = await dbCrearUsuario(u);
-        if (dbId) {
-          setUsuarios((prev) =>
-            prev.map((x) => (x.id === localId ? { ...x, id: dbId } : x))
-          );
-        } else {
-          console.error("dbCrearUsuario devolvió null — revisar consola de Supabase");
+        const result = await dbCrearUsuario(u);
+        if (!result.id) {
+          return { ok: false, error: result.error || "No se pudo crear el usuario." };
         }
+        setUsuarios((prev) => [...prev, { ...u, id: result.id! }]);
+        return { ok: true };
       } catch (e) {
         console.error("Error al crear usuario en Supabase:", e);
+        return {
+          ok: false,
+          error: e instanceof Error ? e.message : "Error de conexión al crear el usuario.",
+        };
       } finally {
         setSincronizando(false);
       }
     }
+    setUsuarios((prev) => [...prev, { ...u, id: uid() }]);
+    return { ok: true };
   };
 
   const editarUsuario = async (u: Usuario) => {
@@ -679,6 +954,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         eliminarUsuario,
         whatsAppConfig,
         actualizarWhatsAppConfig,
+        debeCambiarPassword,
+        setDebeCambiarPassword,
+        solicitarRecuperacionPassword,
+        cambiarMiPassword,
       }}
     >
       {children}

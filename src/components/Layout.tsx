@@ -3,6 +3,7 @@ import { useApp } from "../context";
 import { SUCURSALES } from "../data";
 import ModalConfigWhatsApp from "./ModalConfigWhatsApp";
 
+
 type NavItem = {
   id: "dashboard" | "inventario" | "movimientos" | "herramientas" | "reportes" | "usuarios";
   label: string;
@@ -41,7 +42,7 @@ const navItems: NavItem[] = [
   },
   {
     id: "herramientas",
-    label: "Herramientas",
+    label: "Herramientas / Mobiliario",
     icon: (
       <svg viewBox="0 0 20 20" fill="currentColor" className="w-4.5 h-4.5">
         <path fillRule="evenodd" d="M19 5.5a4.5 4.5 0 0 1-4.791 4.49c-.873-.055-1.808.128-2.368.8l-6.024 7.23a2.724 2.724 0 1 1-3.837-3.837L9.21 8.16c.672-.56.855-1.495.8-2.368a4.5 4.5 0 0 1 5.873-4.575c.324.105.405.49.163.731l-2.161 2.161a.601.601 0 0 0-.126.571l.528 1.88a.601.601 0 0 0 .426.426l1.88.528a.6.6 0 0 0 .571-.126l2.161-2.161c.241-.242.626-.161.731.163A4.51 4.51 0 0 1 19 5.5ZM3 19a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z" clipRule="evenodd" />
@@ -81,11 +82,13 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     toggleTema,
     whatsAppConfig,
     actualizarWhatsAppConfig,
+    debeCambiarPassword,
   } = useApp();
 
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [modalWhatsAppOpen, setModalWhatsAppOpen] = useState(false);
+  const [modalPassVoluntario, setModalPassVoluntario] = useState(false);
 
   const whatsappListo = Boolean(
     whatsAppConfig?.activo &&
@@ -153,6 +156,17 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 whatsappListo ? "bg-emerald-400" : "bg-slate-500"
               }`}
             />
+          </button>
+
+          <button
+            onClick={() => setModalPassVoluntario(true)}
+            title="Cambiar mi contraseña"
+            className="p-1.5 rounded-md hover:bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-sky-400 transition-colors"
+            aria-label="Cambiar mi contraseña"
+          >
+            <svg viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5">
+              <path fillRule="evenodd" d="M10 1a4.5 4.5 0 0 0-4.5 4.5V9H5a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6a2 2 0 0 0-2-2h-.5V5.5A4.5 4.5 0 0 0 10 1Zm3 8V5.5a3 3 0 1 0-6 0V9h6Z" clipRule="evenodd" />
+            </svg>
           </button>
 
           <button
@@ -317,6 +331,9 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               </span>
             )}
           </button>
+
+         
+
           {/* Botón de Cambiar Tema (Oscuro / Claro) */}
           <button
             onClick={toggleTema}
@@ -339,7 +356,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             </div>
           </button>
 
-          <div className={`flex items-center gap-2.5 ${!sidebarOpen ? "md:hidden" : ""}`}>
+          <div className={`flex items-center gap-2 ${!sidebarOpen ? "md:hidden" : ""}`}>
             <div className="w-7 h-7 rounded-full bg-[var(--primary)]/20 flex items-center justify-center shrink-0">
               <span className="text-xs font-semibold text-[var(--primary)]">
                 {usuarioActual.nombre.charAt(0)}
@@ -349,10 +366,21 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               <p className="text-xs font-medium text-[var(--foreground)] truncate">{usuarioActual.nombre}</p>
               <p className="text-[10px] text-[var(--muted-foreground)] capitalize">{usuarioActual.rol}</p>
             </div>
+            {/* Botón de Cambiar Contraseña */}
+            <button
+              onClick={() => setModalPassVoluntario(true)}
+              title="Cambiar mi contraseña"
+              className="p-1 rounded-md hover:bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-sky-400 transition-colors"
+            >
+              <svg viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
+                <path fillRule="evenodd" d="M10 1a4.5 4.5 0 0 0-4.5 4.5V9H5a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6a2 2 0 0 0-2-2h-.5V5.5A4.5 4.5 0 0 0 10 1Zm3 8V5.5a3 3 0 1 0-6 0V9h6Z" clipRule="evenodd" />
+              </svg>
+            </button>
+            {/* Botón de Cerrar Sesión */}
             <button
               onClick={logout}
               title="Cerrar sesión"
-              className="p-1 rounded-md hover:bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
+              className="p-1 rounded-md hover:bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-red-400 transition-colors"
             >
               <svg viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
                 <path fillRule="evenodd" d="M3 4.25A2.25 2.25 0 0 1 5.25 2h5.5A2.25 2.25 0 0 1 13 4.25v2a.75.75 0 0 1-1.5 0v-2a.75.75 0 0 0-.75-.75h-5.5a.75.75 0 0 0-.75.75v11.5c0 .414.336.75.75.75h5.5a.75.75 0 0 0 .75-.75v-2a.75.75 0 0 1 1.5 0v2A2.25 2.25 0 0 1 10.75 18h-5.5A2.25 2.25 0 0 1 3 15.75V4.25Z" clipRule="evenodd" />
@@ -362,16 +390,27 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           </div>
 
           {!sidebarOpen && (
-            <button
-              onClick={logout}
-              title="Cerrar sesión"
-              className="hidden md:flex w-full justify-center p-2 rounded-md hover:bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
-            >
-              <svg viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
-                <path fillRule="evenodd" d="M3 4.25A2.25 2.25 0 0 1 5.25 2h5.5A2.25 2.25 0 0 1 13 4.25v2a.75.75 0 0 1-1.5 0v-2a.75.75 0 0 0-.75-.75h-5.5a.75.75 0 0 0-.75.75v11.5c0 .414.336.75.75.75h5.5a.75.75 0 0 0 .75-.75v-2a.75.75 0 0 1 1.5 0v2A2.25 2.25 0 0 1 10.75 18h-5.5A2.25 2.25 0 0 1 3 15.75V4.25Z" clipRule="evenodd" />
-                <path fillRule="evenodd" d="M19 10a.75.75 0 0 0-.75-.75H8.704l1.048-.943a.75.75 0 1 0-1.004-1.114l-2.5 2.25a.75.75 0 0 0 0 1.114l2.5 2.25a.75.75 0 1 0 1.004-1.114l-1.048-.943h9.546A.75.75 0 0 0 19 10Z" clipRule="evenodd" />
-              </svg>
-            </button>
+            <div className="hidden md:flex flex-col gap-1 w-full">
+              <button
+                onClick={() => setModalPassVoluntario(true)}
+                title="Cambiar contraseña"
+                className="w-full flex justify-center p-2 rounded-md hover:bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-sky-400 transition-colors"
+              >
+                <svg viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
+                  <path fillRule="evenodd" d="M10 1a4.5 4.5 0 0 0-4.5 4.5V9H5a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6a2 2 0 0 0-2-2h-.5V5.5A4.5 4.5 0 0 0 10 1Zm3 8V5.5a3 3 0 1 0-6 0V9h6Z" clipRule="evenodd" />
+                </svg>
+              </button>
+              <button
+                onClick={logout}
+                title="Cerrar sesión"
+                className="w-full flex justify-center p-2 rounded-md hover:bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-red-400 transition-colors"
+              >
+                <svg viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
+                  <path fillRule="evenodd" d="M3 4.25A2.25 2.25 0 0 1 5.25 2h5.5A2.25 2.25 0 0 1 13 4.25v2a.75.75 0 0 1-1.5 0v-2a.75.75 0 0 0-.75-.75h-5.5a.75.75 0 0 0-.75.75v11.5c0 .414.336.75.75.75h5.5a.75.75 0 0 0 .75-.75v-2a.75.75 0 0 1 1.5 0v2A2.25 2.25 0 0 1 10.75 18h-5.5A2.25 2.25 0 0 1 3 15.75V4.25Z" clipRule="evenodd" />
+                  <path fillRule="evenodd" d="M19 10a.75.75 0 0 0-.75-.75H8.704l1.048-.943a.75.75 0 1 0-1.004-1.114l-2.5 2.25a.75.75 0 0 0 0 1.114l2.5 2.25a.75.75 0 1 0 1.004-1.114l-1.048-.943h9.546A.75.75 0 0 0 19 10Z" clipRule="evenodd" />
+                </svg>
+              </button>
+            </div>
           )}
         </div>
       </aside>
@@ -393,6 +432,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         configActual={whatsAppConfig}
         onGuardar={actualizarWhatsAppConfig}
       />
+
     </div>
   );
 }

@@ -21,10 +21,30 @@ function Modal({
   titulo: string;
   usuario: Omit<Usuario, "id"> & { id?: string };
   onClose: () => void;
-  onSave: (u: typeof usuario) => void;
+  onSave: (u: typeof usuario) => Promise<{ ok: boolean; error?: string }>;
 }) {
   const [form, setForm] = useState(usuario);
+  const [guardando, setGuardando] = useState(false);
+  const [error, setError] = useState("");
   const set = (k: string, v: string | boolean) => setForm((p) => ({ ...p, [k]: v }));
+
+  const guardar = async () => {
+    setError("");
+    if (!form.nombre.trim() || !form.email.trim() || (!usuario.id && !form.password)) {
+      setError("Completa los campos obligatorios.");
+      return;
+    }
+
+    setGuardando(true);
+    try {
+      const result = await onSave(form);
+      if (!result.ok) setError(result.error || "No se pudo guardar el usuario.");
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "No se pudo guardar el usuario.");
+    } finally {
+      setGuardando(false);
+    }
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
@@ -80,18 +100,20 @@ function Modal({
               {form.activo ? "Usuario activo" : "Usuario inactivo"}
             </span>
           </div>
+          {error && (
+            <p role="alert" className="rounded-md border border-red-800/50 bg-red-950/40 px-3 py-2 text-xs text-red-300">
+              {error}
+            </p>
+          )}
         </div>
         <div className="flex justify-end gap-2 px-5 py-4 border-t border-[var(--border)]">
           <button onClick={onClose} className="btn-secondary">Cancelar</button>
           <button
-            onClick={() => {
-              if (!form.nombre || !form.email) return;
-              if (!usuario.id && !form.password) return;
-              onSave(form);
-            }}
-            className="btn-primary"
+            onClick={guardar}
+            disabled={guardando}
+            className="btn-primary disabled:opacity-50"
           >
-            Guardar
+            {guardando ? "Guardando..." : "Guardar"}
           </button>
         </div>
       </div>
@@ -100,7 +122,15 @@ function Modal({
 }
 
 export default function Usuarios() {
-  const { usuarioActual, usuarios, agregarUsuario, editarUsuario, toggleUsuario, eliminarUsuario } = useApp();
+  const {
+    usuarioActual,
+    usuarios,
+    agregarUsuario,
+    editarUsuario,
+    toggleUsuario,
+    eliminarUsuario,
+    solicitarRecuperacionPassword,
+  } = useApp();
   if (!usuarioActual || usuarioActual.rol !== "gerente") return (
     <div className="flex-1 flex items-center justify-center">
       <p className="text-[var(--muted-foreground)]">Acceso restringido a gerentes.</p>
@@ -111,6 +141,8 @@ export default function Usuarios() {
   const [confirmarEliminar, setConfirmarEliminar] = useState<string | null>(null);
   const [filtroRol, setFiltroRol] = useState<"todos" | "gerente" | "vendedor">("todos");
   const [filtroSucursal, setFiltroSucursal] = useState<"todas" | "sucursal1" | "sucursal2">("todas");
+  const [notifTemp, setNotifTemp] = useState<{ nombre: string; email: string; pass: string; enviada: boolean } | null>(null);
+  const [enviandoTempId, setEnviandoTempId] = useState<string | null>(null);
 
   const filtrados = usuarios.filter((u) => {
     const matchRol = filtroRol === "todos" || u.rol === filtroRol;
@@ -118,16 +150,40 @@ export default function Usuarios() {
     return matchRol && matchS;
   });
 
-  const handleSave = (data: Omit<Usuario, "id"> & { id?: string }) => {
+  const handleSave = async (data: Omit<Usuario, "id"> & { id?: string }) => {
     if (data.id) {
       const existing = usuarios.find((u) => u.id === data.id);
       const updated = { ...data };
       if (!updated.password && existing) updated.password = existing.password;
-      editarUsuario(updated as Usuario);
+      await editarUsuario(updated as Usuario);
+      setModal(null);
+      return { ok: true };
     } else {
-      agregarUsuario(data);
+      const result = await agregarUsuario(data);
+      if (!result.ok) return result;
     }
     setModal(null);
+    return { ok: true };
+  };
+
+  const handleEnviarPassTemporal = async (u: Usuario) => {
+    setEnviandoTempId(u.id);
+    setNotifTemp(null);
+    try {
+      const res = await solicitarRecuperacionPassword(u.email);
+      if (res.ok && res.passwordTemporal) {
+        setNotifTemp({
+          nombre: u.nombre,
+          email: u.email,
+          pass: res.passwordTemporal,
+          enviada: Boolean(res.emailEnviado),
+        });
+      }
+    } catch {
+      // Ignorar
+    } finally {
+      setEnviandoTempId(null);
+    }
   };
 
   return (
@@ -223,6 +279,36 @@ export default function Usuarios() {
           ))}
         </div>
 
+        {/* Notificación de envío de contraseña temporal */}
+        {notifTemp && (
+          <div className="mb-5 p-4 rounded-xl bg-sky-500/10 border border-sky-500/30 text-sky-200 flex items-start justify-between gap-3 animate-fadeIn">
+            <div className="flex items-start gap-3">
+              <div className="w-8 h-8 rounded-lg bg-sky-500/20 border border-sky-500/30 flex items-center justify-center text-sky-400 shrink-0 mt-0.5">
+                <svg viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
+                  <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.857-9.809a.75.75 0 00-1.214-.882l-3.483 4.79-1.88-1.88a.75.75 0 10-1.06 1.061l2.5 2.5a.75.75 0 001.137-.089l4-5.5z" clipRule="evenodd" />
+                </svg>
+              </div>
+              <div>
+                <p className="text-xs font-bold text-sky-300">
+                  ¡Contraseña temporal autogenerada y enviada!
+                </p>
+                <p className="text-xs text-sky-200/90 mt-0.5">
+                  La nueva clave temporal de acceso fue enviada directamente al correo registrado de <strong>{notifTemp.nombre}</strong> (<strong className="text-sky-300">{notifTemp.email}</strong>).
+                </p>
+                <p className="text-[11px] text-[var(--muted-foreground)] mt-1">
+                  Por seguridad, la contraseña no se muestra en pantalla. El empleado deberá revisar su bandeja de entrada o spam.
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={() => setNotifTemp(null)}
+              className="text-[var(--muted-foreground)] hover:text-[var(--foreground)] p-1 rounded"
+            >
+              ✕
+            </button>
+          </div>
+        )}
+
         {/* User cards */}
         <div className="space-y-2">
           {filtrados.map((u) => (
@@ -238,6 +324,11 @@ export default function Usuarios() {
                   <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold capitalize ${u.rol === "gerente" ? "bg-[var(--primary)]/10 text-[var(--primary)]" : "bg-blue-500/10 text-blue-400"}`}>
                     {u.rol}
                   </span>
+                  {u.passwordTemporal && (
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/15 text-amber-400 border border-amber-500/30">
+                      Clave Temporal
+                    </span>
+                  )}
                   {!u.activo && (
                     <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-[var(--muted)] text-[var(--muted-foreground)]">Inactivo</span>
                   )}
@@ -245,6 +336,23 @@ export default function Usuarios() {
                 <p className="text-xs text-[var(--muted-foreground)] mt-0.5">{u.email} · {SUCURSALES[u.sucursal]}</p>
               </div>
               <div className="flex items-center gap-2 shrink-0">
+                <button
+                  onClick={() => handleEnviarPassTemporal(u)}
+                  disabled={enviandoTempId === u.id || !u.activo}
+                  title="Autogenerar y enviar contraseña temporal"
+                  className="p-1.5 rounded-md hover:bg-amber-500/15 text-[var(--muted-foreground)] hover:text-amber-400 transition-colors disabled:opacity-40"
+                >
+                  {enviandoTempId === u.id ? (
+                    <svg className="animate-spin w-4 h-4 text-amber-400" viewBox="0 0 24 24" fill="none">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                  ) : (
+                    <svg viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 5.25a3 3 0 0 1 3 3m3 0a6 6 0 0 1-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1 1 21.75 8.25Z" />
+                    </svg>
+                  )}
+                </button>
                 <button
                   onClick={() => toggleUsuario(u.id)}
                   title={u.activo ? "Desactivar usuario" : "Activar usuario"}

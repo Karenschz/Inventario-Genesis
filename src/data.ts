@@ -151,6 +151,10 @@ export const herramientasIniciales: Herramienta[] = [
     id: "h8", nombre: "Multímetro digital Fluke", codigo: "MUL-FLK",
     categoria: "Medición", sucursal: "sucursal1", estado: "disponible",
   },
+  {
+    id: "h8b", nombre: "Mesa de trabajo metálica", codigo: "MES-001",
+    categoria: "Mobiliario", sucursal: "sucursal1", estado: "disponible", precio: 3200,
+  },
   // Sucursal 2
   {
     id: "h9", nombre: "Llave de impacto eléctrica 3/8\"", codigo: "LIE-038",
@@ -178,6 +182,10 @@ export const herramientasIniciales: Herramienta[] = [
     id: "h14", nombre: "Compresor de aire 50L 2HP", codigo: "COM-50L",
     categoria: "Herramienta eléctrica", sucursal: "sucursal2", estado: "disponible",
   },
+  {
+    id: "h15", nombre: "Silla de oficina para taller", codigo: "SIL-010",
+    categoria: "Mobiliario", sucursal: "sucursal2", estado: "en_reparacion", precio: 1850,
+  },
 ];
 
 export const SUCURSALES = {
@@ -192,7 +200,7 @@ export const CATEGORIAS_REPUESTO = [
 
 export const CATEGORIAS_HERRAMIENTA = [
   "Herramienta manual", "Herramienta eléctrica", "Diagnóstico",
-  "Elevación", "Medición", "Otro",
+  "Elevación", "Medición", "Mobiliario", "Otro",
 ];
 
 export const MOTIVOS_SALIDA: MotivoMovimiento[] = [
