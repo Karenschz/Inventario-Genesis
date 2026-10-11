@@ -26,7 +26,7 @@
   --radius-lg: calc(var(--radius) + 4px);
 }
 
-:root {
+:root, [data-theme="dark"] {
   --background: #0c0c0e;
   --foreground: #f0ede8;
   --card: #141416;
@@ -44,6 +44,27 @@
   --destructive: #ef4444;
   --success: #22c55e;
   --warning: #f59e0b;
+  --radius: 6px;
+}
+
+[data-theme="light"] {
+  --background: #f8fafc;
+  --foreground: #0f172a;
+  --card: #ffffff;
+  --card-foreground: #0f172a;
+  --primary: #d97706;
+  --primary-foreground: #ffffff;
+  --secondary: #f1f5f9;
+  --secondary-foreground: #334155;
+  --muted: #e2e8f0;
+  --muted-foreground: #64748b;
+  --accent: #ea580c;
+  --accent-foreground: #ffffff;
+  --border: #cbd5e1;
+  --ring: #d97706;
+  --destructive: #dc2626;
+  --success: #16a34a;
+  --warning: #d97706;
   --radius: 6px;
 }
 

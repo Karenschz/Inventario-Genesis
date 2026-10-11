@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { useApp } from "../context";
 import { SUCURSALES } from "../data";
+import ModalConfigWhatsApp from "./ModalConfigWhatsApp";
+
 
 type NavItem = {
   id: "dashboard" | "inventario" | "movimientos" | "herramientas" | "reportes" | "usuarios";
@@ -40,7 +42,7 @@ const navItems: NavItem[] = [
   },
   {
     id: "herramientas",
-    label: "Herramientas",
+    label: "Herramientas / Mobiliario",
     icon: (
       <svg viewBox="0 0 20 20" fill="currentColor" className="w-4.5 h-4.5">
         <path fillRule="evenodd" d="M19 5.5a4.5 4.5 0 0 1-4.791 4.49c-.873-.055-1.808.128-2.368.8l-6.024 7.23a2.724 2.724 0 1 1-3.837-3.837L9.21 8.16c.672-.56.855-1.495.8-2.368a4.5 4.5 0 0 1 5.873-4.575c.324.105.405.49.163.731l-2.161 2.161a.601.601 0 0 0-.126.571l.528 1.88a.601.601 0 0 0 .426.426l1.88.528a.6.6 0 0 0 .571-.126l2.161-2.161c.241-.242.626-.161.731.163A4.51 4.51 0 0 1 19 5.5ZM3 19a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z" clipRule="evenodd" />
@@ -76,10 +78,24 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     setVista,
     logout,
     repuestos,
+    tema,
+    toggleTema,
+    whatsAppConfig,
+    actualizarWhatsAppConfig,
+    debeCambiarPassword,
   } = useApp();
 
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [modalWhatsAppOpen, setModalWhatsAppOpen] = useState(false);
+  const [modalPassVoluntario, setModalPassVoluntario] = useState(false);
+
+  const whatsappListo = Boolean(
+    whatsAppConfig?.activo &&
+    whatsAppConfig?.instanceId &&
+    whatsAppConfig?.token &&
+    whatsAppConfig?.destinatario
+  );
 
   if (!usuarioActual) return null;
 
@@ -119,6 +135,55 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               Genesis
             </span>
           </div>
+        </div>
+
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => setModalWhatsAppOpen(true)}
+            title={
+              whatsappListo
+                ? "WhatsApp Conectado (Alertas activas)"
+                : "Configurar Alertas de WhatsApp"
+            }
+            className="p-1.5 rounded-md hover:bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-emerald-400 transition-colors relative"
+            aria-label="Configurar WhatsApp"
+          >
+            <svg viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5 text-emerald-400">
+              <path d="M12.04 2C6.58 2 2.13 6.45 2.13 11.91C2.13 13.66 2.59 15.36 3.45 16.86L2.05 22L7.3 20.62C8.75 21.41 10.38 21.83 12.04 21.83C17.5 21.83 21.95 17.38 21.95 11.92C21.95 9.27 20.92 6.78 19.05 4.91C17.18 3.03 14.69 2 12.04 2M12.05 3.67C14.25 3.67 16.31 4.53 17.87 6.09C19.42 7.65 20.28 9.72 20.28 11.92C20.28 16.46 16.58 20.15 12.04 20.15C10.56 20.15 9.11 19.76 7.85 19.01L7.55 18.83L4.43 19.65L5.26 16.61L5.06 16.29C4.24 14.99 3.8 13.47 3.8 11.91C3.81 7.37 7.5 3.67 12.05 3.67M9.11 7.44C8.94 7.44 8.68 7.5 8.46 7.74C8.24 7.98 7.62 8.56 7.62 9.73C7.62 10.9 8.47 12.03 8.6 12.18C8.73 12.33 10.27 14.7 12.63 15.72C13.2 15.96 13.63 16.11 13.98 16.22C14.54 16.4 15.06 16.37 15.46 16.31C15.92 16.24 16.85 15.75 17.04 15.2C17.24 14.66 17.24 14.19 17.18 14.09C17.12 13.99 16.96 13.94 16.71 13.81C16.47 13.69 15.26 13.09 15.03 13.01C14.81 12.92 14.64 12.88 14.48 13.12C14.32 13.36 13.85 13.94 13.71 14.09C13.56 14.25 13.42 14.27 13.17 14.15C12.93 14.02 12.14 13.77 11.21 12.93C10.48 12.28 9.99 11.48 9.85 11.23C9.7 10.99 9.83 10.86 9.96 10.74C10.07 10.63 10.2 10.45 10.33 10.31C10.45 10.16 10.49 10.06 10.58 9.88C10.66 9.69 10.62 9.53 10.56 9.41C10.5 9.29 10.03 8.14 9.83 7.67C9.64 7.21 9.45 7.27 9.3 7.26C9.17 7.26 9.01 7.25 8.85 7.25" />
+            </svg>
+            <span
+              className={`absolute top-1 right-1 w-2 h-2 rounded-full ring-1 ring-[var(--card)] ${
+                whatsappListo ? "bg-emerald-400" : "bg-slate-500"
+              }`}
+            />
+          </button>
+
+          <button
+            onClick={() => setModalPassVoluntario(true)}
+            title="Cambiar mi contraseña"
+            className="p-1.5 rounded-md hover:bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-sky-400 transition-colors"
+            aria-label="Cambiar mi contraseña"
+          >
+            <svg viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5">
+              <path fillRule="evenodd" d="M10 1a4.5 4.5 0 0 0-4.5 4.5V9H5a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6a2 2 0 0 0-2-2h-.5V5.5A4.5 4.5 0 0 0 10 1Zm3 8V5.5a3 3 0 1 0-6 0V9h6Z" clipRule="evenodd" />
+            </svg>
+          </button>
+
+          <button
+            onClick={toggleTema}
+            title={tema === "oscuro" ? "Cambiar a Modo Claro" : "Cambiar a Modo Oscuro"}
+            className="p-1.5 rounded-md hover:bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
+          >
+            {tema === "oscuro" ? (
+              <svg viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5 text-amber-400">
+                <path d="M10 2a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0v-1.5A.75.75 0 0 1 10 2Zm0 13a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0v-1.5A.75.75 0 0 1 10 15Zm-8-5a.75.75 0 0 1 .75-.75h1.5a.75.75 0 0 1 0 1.5h-1.5A.75.75 0 0 1 2 10Zm13 0a.75.75 0 0 1 .75-.75h1.5a.75.75 0 0 1 0 1.5h-1.5A.75.75 0 0 1 15 10Zm-10.364-5.636a.75.75 0 0 1 1.06 0l1.061 1.06a.75.75 0 0 1-1.06 1.06l-1.06-1.06a.75.75 0 0 1 0-1.06Zm9.193 9.193a.75.75 0 0 1 1.06 0l1.06 1.061a.75.75 0 0 1-1.06 1.06l-1.06-1.061a.75.75 0 0 1 0-1.06ZM4.636 15.364a.75.75 0 0 1 0-1.06l1.06-1.061a.75.75 0 1 1 1.061 1.06l-1.06 1.061a.75.75 0 0 1-1.061 0Zm9.193-9.193a.75.75 0 0 1 0-1.06l1.061-1.06a.75.75 0 0 1 1.06 1.06l-1.06 1.061a.75.75 0 0 1-1.061 0ZM10 6.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Z" />
+              </svg>
+            ) : (
+              <svg viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5 text-indigo-500">
+                <path fillRule="evenodd" d="M7.455 2.004a.75.75 0 0 1 .862.243 7.5 7.5 0 0 0 10.436 10.436.75.75 0 0 1 1.006.96 9.5 9.5 0 1 1-12.063-12.063a.75.75 0 0 1 .759.424Z" clipRule="evenodd" />
+              </svg>
+            )}
+          </button>
         </div>
       </header>
 
@@ -229,9 +294,69 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           })}
         </nav>
 
-        {/* Perfil / Cierre de Sesión */}
-        <div className="p-3 border-t border-[var(--border)] shrink-0">
-          <div className={`flex items-center gap-2.5 ${!sidebarOpen ? "md:hidden" : ""}`}>
+        {/* Perfil / WhatsApp / Alternar Tema / Cierre de Sesión */}
+        <div className="p-3 border-t border-[var(--border)] shrink-0 space-y-2">
+          {/* Botón de Configuración de WhatsApp */}
+          <button
+            onClick={() => setModalWhatsAppOpen(true)}
+            className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-md text-xs font-medium bg-[var(--secondary)] border border-[var(--border)] text-[var(--foreground)] hover:bg-[var(--muted)] transition-colors ${
+              !sidebarOpen ? "md:justify-center" : ""
+            }`}
+            title="Configurar Alertas de WhatsApp por Stock Cero"
+          >
+            <div className="flex items-center gap-2 min-w-0">
+              <div className="relative shrink-0 flex items-center justify-center">
+                <svg viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4 text-emerald-400">
+                  <path d="M12.04 2C6.58 2 2.13 6.45 2.13 11.91C2.13 13.66 2.59 15.36 3.45 16.86L2.05 22L7.3 20.62C8.75 21.41 10.38 21.83 12.04 21.83C17.5 21.83 21.95 17.38 21.95 11.92C21.95 9.27 20.92 6.78 19.05 4.91C17.18 3.03 14.69 2 12.04 2M12.05 3.67C14.25 3.67 16.31 4.53 17.87 6.09C19.42 7.65 20.28 9.72 20.28 11.92C20.28 16.46 16.58 20.15 12.04 20.15C10.56 20.15 9.11 19.76 7.85 19.01L7.55 18.83L4.43 19.65L5.26 16.61L5.06 16.29C4.24 14.99 3.8 13.47 3.8 11.91C3.81 7.37 7.5 3.67 12.05 3.67M9.11 7.44C8.94 7.44 8.68 7.5 8.46 7.74C8.24 7.98 7.62 8.56 7.62 9.73C7.62 10.9 8.47 12.03 8.6 12.18C8.73 12.33 10.27 14.7 12.63 15.72C13.2 15.96 13.63 16.11 13.98 16.22C14.54 16.4 15.06 16.37 15.46 16.31C15.92 16.24 16.85 15.75 17.04 15.2C17.24 14.66 17.24 14.19 17.18 14.09C17.12 13.99 16.96 13.94 16.71 13.81C16.47 13.69 15.26 13.09 15.03 13.01C14.81 12.92 14.64 12.88 14.48 13.12C14.32 13.36 13.85 13.94 13.71 14.09C13.56 14.25 13.42 14.27 13.17 14.15C12.93 14.02 12.14 13.77 11.21 12.93C10.48 12.28 9.99 11.48 9.85 11.23C9.7 10.99 9.83 10.86 9.96 10.74C10.07 10.63 10.2 10.45 10.33 10.31C10.45 10.16 10.49 10.06 10.58 9.88C10.66 9.69 10.62 9.53 10.56 9.41C10.5 9.29 10.03 8.14 9.83 7.67C9.64 7.21 9.45 7.27 9.3 7.26C9.17 7.26 9.01 7.25 8.85 7.25" />
+                </svg>
+                <span
+                  className={`absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full ${
+                    whatsappListo ? "bg-emerald-400" : "bg-slate-500"
+                  }`}
+                />
+              </div>
+              <span className={`truncate ${!sidebarOpen ? "md:hidden" : ""}`}>
+                Alertas WhatsApp
+              </span>
+            </div>
+            {sidebarOpen && (
+              <span
+                className={`text-[9px] px-1.5 py-0.5 rounded font-semibold ${
+                  whatsappListo
+                    ? "bg-emerald-500/15 text-emerald-400 border border-emerald-500/30"
+                    : "bg-slate-700/50 text-slate-400"
+                }`}
+              >
+                {whatsappListo ? "ACTIVO" : "OFF"}
+              </span>
+            )}
+          </button>
+
+         
+
+          {/* Botón de Cambiar Tema (Oscuro / Claro) */}
+          <button
+            onClick={toggleTema}
+            className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-md text-xs font-medium bg-[var(--secondary)] border border-[var(--border)] text-[var(--foreground)] hover:bg-[var(--muted)] transition-colors ${!sidebarOpen ? "md:justify-center" : ""}`}
+            title={tema === "oscuro" ? "Cambiar a Modo Claro" : "Cambiar a Modo Oscuro"}
+          >
+            <div className="flex items-center gap-2">
+              {tema === "oscuro" ? (
+                <svg viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4 text-amber-400 shrink-0">
+                  <path d="M10 2a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0v-1.5A.75.75 0 0 1 10 2Zm0 13a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0v-1.5A.75.75 0 0 1 10 15Zm-8-5a.75.75 0 0 1 .75-.75h1.5a.75.75 0 0 1 0 1.5h-1.5A.75.75 0 0 1 2 10Zm13 0a.75.75 0 0 1 .75-.75h1.5a.75.75 0 0 1 0 1.5h-1.5A.75.75 0 0 1 15 10Zm-10.364-5.636a.75.75 0 0 1 1.06 0l1.061 1.06a.75.75 0 0 1-1.06 1.06l-1.06-1.06a.75.75 0 0 1 0-1.06Zm9.193 9.193a.75.75 0 0 1 1.06 0l1.06 1.061a.75.75 0 0 1-1.06 1.06l-1.06-1.061a.75.75 0 0 1 0-1.06ZM4.636 15.364a.75.75 0 0 1 0-1.06l1.06-1.061a.75.75 0 1 1 1.061 1.06l-1.06 1.061a.75.75 0 0 1-1.061 0Zm9.193-9.193a.75.75 0 0 1 0-1.06l1.061-1.06a.75.75 0 0 1 1.06 1.06l-1.06 1.061a.75.75 0 0 1-1.061 0ZM10 6.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Z" />
+                </svg>
+              ) : (
+                <svg viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4 text-indigo-500 shrink-0">
+                  <path fillRule="evenodd" d="M7.455 2.004a.75.75 0 0 1 .862.243 7.5 7.5 0 0 0 10.436 10.436.75.75 0 0 1 1.006.96 9.5 9.5 0 1 1-12.063-12.063a.75.75 0 0 1 .759.424Z" clipRule="evenodd" />
+                </svg>
+              )}
+              <span className={`${!sidebarOpen ? "md:hidden" : ""}`}>
+                {tema === "oscuro" ? "Modo claro" : "Modo oscuro"}
+              </span>
+            </div>
+          </button>
+
+          <div className={`flex items-center gap-2 ${!sidebarOpen ? "md:hidden" : ""}`}>
             <div className="w-7 h-7 rounded-full bg-[var(--primary)]/20 flex items-center justify-center shrink-0">
               <span className="text-xs font-semibold text-[var(--primary)]">
                 {usuarioActual.nombre.charAt(0)}
@@ -241,10 +366,21 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               <p className="text-xs font-medium text-[var(--foreground)] truncate">{usuarioActual.nombre}</p>
               <p className="text-[10px] text-[var(--muted-foreground)] capitalize">{usuarioActual.rol}</p>
             </div>
+            {/* Botón de Cambiar Contraseña */}
+            <button
+              onClick={() => setModalPassVoluntario(true)}
+              title="Cambiar mi contraseña"
+              className="p-1 rounded-md hover:bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-sky-400 transition-colors"
+            >
+              <svg viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
+                <path fillRule="evenodd" d="M10 1a4.5 4.5 0 0 0-4.5 4.5V9H5a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6a2 2 0 0 0-2-2h-.5V5.5A4.5 4.5 0 0 0 10 1Zm3 8V5.5a3 3 0 1 0-6 0V9h6Z" clipRule="evenodd" />
+              </svg>
+            </button>
+            {/* Botón de Cerrar Sesión */}
             <button
               onClick={logout}
               title="Cerrar sesión"
-              className="p-1 rounded-md hover:bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
+              className="p-1 rounded-md hover:bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-red-400 transition-colors"
             >
               <svg viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
                 <path fillRule="evenodd" d="M3 4.25A2.25 2.25 0 0 1 5.25 2h5.5A2.25 2.25 0 0 1 13 4.25v2a.75.75 0 0 1-1.5 0v-2a.75.75 0 0 0-.75-.75h-5.5a.75.75 0 0 0-.75.75v11.5c0 .414.336.75.75.75h5.5a.75.75 0 0 0 .75-.75v-2a.75.75 0 0 1 1.5 0v2A2.25 2.25 0 0 1 10.75 18h-5.5A2.25 2.25 0 0 1 3 15.75V4.25Z" clipRule="evenodd" />
@@ -254,24 +390,49 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           </div>
 
           {!sidebarOpen && (
-            <button
-              onClick={logout}
-              title="Cerrar sesión"
-              className="hidden md:flex w-full justify-center p-2 rounded-md hover:bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
-            >
-              <svg viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
-                <path fillRule="evenodd" d="M3 4.25A2.25 2.25 0 0 1 5.25 2h5.5A2.25 2.25 0 0 1 13 4.25v2a.75.75 0 0 1-1.5 0v-2a.75.75 0 0 0-.75-.75h-5.5a.75.75 0 0 0-.75.75v11.5c0 .414.336.75.75.75h5.5a.75.75 0 0 0 .75-.75v-2a.75.75 0 0 1 1.5 0v2A2.25 2.25 0 0 1 10.75 18h-5.5A2.25 2.25 0 0 1 3 15.75V4.25Z" clipRule="evenodd" />
-                <path fillRule="evenodd" d="M19 10a.75.75 0 0 0-.75-.75H8.704l1.048-.943a.75.75 0 1 0-1.004-1.114l-2.5 2.25a.75.75 0 0 0 0 1.114l2.5 2.25a.75.75 0 1 0 1.004-1.114l-1.048-.943h9.546A.75.75 0 0 0 19 10Z" clipRule="evenodd" />
-              </svg>
-            </button>
+            <div className="hidden md:flex flex-col gap-1 w-full">
+              <button
+                onClick={() => setModalPassVoluntario(true)}
+                title="Cambiar contraseña"
+                className="w-full flex justify-center p-2 rounded-md hover:bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-sky-400 transition-colors"
+              >
+                <svg viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
+                  <path fillRule="evenodd" d="M10 1a4.5 4.5 0 0 0-4.5 4.5V9H5a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6a2 2 0 0 0-2-2h-.5V5.5A4.5 4.5 0 0 0 10 1Zm3 8V5.5a3 3 0 1 0-6 0V9h6Z" clipRule="evenodd" />
+                </svg>
+              </button>
+              <button
+                onClick={logout}
+                title="Cerrar sesión"
+                className="w-full flex justify-center p-2 rounded-md hover:bg-[var(--secondary)] text-[var(--muted-foreground)] hover:text-red-400 transition-colors"
+              >
+                <svg viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
+                  <path fillRule="evenodd" d="M3 4.25A2.25 2.25 0 0 1 5.25 2h5.5A2.25 2.25 0 0 1 13 4.25v2a.75.75 0 0 1-1.5 0v-2a.75.75 0 0 0-.75-.75h-5.5a.75.75 0 0 0-.75.75v11.5c0 .414.336.75.75.75h5.5a.75.75 0 0 0 .75-.75v-2a.75.75 0 0 1 1.5 0v2A2.25 2.25 0 0 1 10.75 18h-5.5A2.25 2.25 0 0 1 3 15.75V4.25Z" clipRule="evenodd" />
+                  <path fillRule="evenodd" d="M19 10a.75.75 0 0 0-.75-.75H8.704l1.048-.943a.75.75 0 1 0-1.004-1.114l-2.5 2.25a.75.75 0 0 0 0 1.114l2.5 2.25a.75.75 0 1 0 1.004-1.114l-1.048-.943h9.546A.75.75 0 0 0 19 10Z" clipRule="evenodd" />
+                </svg>
+              </button>
+            </div>
           )}
         </div>
       </aside>
 
       {/* Contenido Principal */}
       <main className="flex-1 flex flex-col min-w-0 overflow-y-auto w-full p-4 md:p-6">
-        {children}
+        <div className="flex-1 flex flex-col min-w-0">
+          {children}
+        </div>
+        <footer style={{ textAlign: "center", padding: "1rem", fontSize: "0.9rem" }} className="text-[var(--muted-foreground)] mt-6 shrink-0 border-t border-[var(--border)]">
+          <p>© 2026 Sistema. Desarrollado por estudiantes de la <strong>Universidad Luterana Salvadoreña (ULS)</strong>.</p>
+        </footer>
       </main>
+
+      {/* Modal de Configuración de WhatsApp */}
+      <ModalConfigWhatsApp
+        isOpen={modalWhatsAppOpen}
+        onClose={() => setModalWhatsAppOpen(false)}
+        configActual={whatsAppConfig}
+        onGuardar={actualizarWhatsAppConfig}
+      />
+
     </div>
   );
 }

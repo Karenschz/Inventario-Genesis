@@ -1,6 +1,7 @@
 import React from "react";
 import { AppProvider, useApp } from "./context";
 import Login from "./components/Login";
+import RestablecerPassword from "./components/RestablecerPassword";
 import Layout from "./components/Layout";
 import Dashboard from "./components/Dashboard";
 import Inventario from "./components/Inventario";
@@ -60,7 +61,9 @@ class ErrorBoundary extends React.Component<
 }
 
 function AppContent() {
-  const { usuarioActual, vistaActual } = useApp();
+  const { usuarioActual, vistaActual, debeCambiarPassword } = useApp();
+
+  if (debeCambiarPassword) return <RestablecerPassword />;
 
   if (!usuarioActual) return <Login />;
 
