@@ -193,21 +193,19 @@ function ModalRepuesto({
                 className="input-field font-mono-data"
               />
             </div>
-            {esGerente && (
-              <div>
-                <label className="block text-xs font-medium text-[var(--muted-foreground)] mb-1">
-                  Precio de compra $
-                </label>
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={form.precioCompra}
-                  onChange={(e) => set("precioCompra", e.target.value)}
-                  className="input-field font-mono-data"
-                />
-              </div>
-            )}
+            <div>
+              <label className="block text-xs font-medium text-[var(--muted-foreground)] mb-1">
+                Precio de compra $
+              </label>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={form.precioCompra}
+                onChange={(e) => set("precioCompra", e.target.value)}
+                className="input-field font-mono-data"
+              />
+            </div>
             <div className={esGerente ? "" : "col-span-2"}>
               <label className="block text-xs font-medium text-[var(--muted-foreground)] mb-1">
                 Precio de venta $
@@ -800,7 +798,7 @@ export default function Inventario() {
                     "Categoría",
                     "Ubicación",
                     "Existencia",
-                    ...(esGerente ? ["P. Compra"] : []),
+                    "P. Compra",
                     "P. Venta",
                     "Acciones de Stock (Venta / Entrada)",
                     "Acciones",
@@ -817,7 +815,7 @@ export default function Inventario() {
               <tbody>
                 {filtrados.length === 0 ? (
                   <tr>
-                    <td colSpan={esGerente ? 9 : 8} className="px-4 py-12 text-center text-[var(--muted-foreground)] text-sm">
+                    <td colSpan={9} className="px-4 py-12 text-center text-[var(--muted-foreground)] text-sm">
                       No se encontraron repuestos con esos filtros en {SUCURSALES[sucursalTab]}.
                     </td>
                   </tr>
@@ -883,12 +881,10 @@ export default function Inventario() {
                           </div>
                         </td>
 
-                        {/* P. Compra (Gerente) */}
-                        {esGerente && (
-                          <td className="px-4 py-3 font-mono-data text-xs text-[var(--muted-foreground)]">
-                            ${r.precioCompra.toLocaleString("es-MX")}
-                          </td>
-                        )}
+                        {/* P. Compra */}
+                        <td className="px-4 py-3 font-mono-data text-xs text-[var(--muted-foreground)]">
+                          ${r.precioCompra.toLocaleString("es-MX")}
+                        </td>
 
                         {/* P. Venta */}
                         <td className="px-4 py-3 font-mono-data text-xs font-semibold text-[var(--foreground)]">

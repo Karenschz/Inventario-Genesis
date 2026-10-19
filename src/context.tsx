@@ -301,32 +301,54 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setErrorSincronizacion(null);
 
     try {
-      const [dbReps, dbMovs, dbHerrs, dbUsers] = await Promise.allSettled([
-        dbFetchRepuestos(),
-        dbFetchMovimientos(),
-        dbFetchHerramientas(),
-        dbFetchUsuarios(),
-      ]);
+      let datosServidor: {
+        repuestos: Repuesto[];
+        movimientos: MovimientoInventario[];
+        herramientas: Herramienta[];
+      } | null = null;
+      let errorLectura: unknown;
+      for (let intento = 0; intento < 3 && navigator.onLine; intento++) {
+        try {
+          const [repuestosServidor, movimientosServidor, herramientasServidor] =
+            await Promise.all([
+              dbFetchRepuestos(),
+              dbFetchMovimientos(),
+              dbFetchHerramientas(),
+            ]);
+          datosServidor = {
+            repuestos: repuestosServidor,
+            movimientos: movimientosServidor,
+            herramientas: herramientasServidor,
+          };
+          break;
+        } catch (error) {
+          errorLectura = error;
+          if (intento < 2) {
+            await new Promise((resolve) => window.setTimeout(resolve, 1000 * (intento + 1)));
+          }
+        }
+      }
 
-      if (dbReps.status !== "fulfilled") {
-        console.error("No se pudo actualizar el inventario desde Supabase:", dbReps.reason);
-        setErrorSincronizacion("No se pudo conectar con Supabase. Los cambios siguen guardados en este dispositivo.");
+      if (!datosServidor) {
+        console.error("No se pudieron cargar datos para sincronizar con Supabase:", errorLectura);
+        setErrorSincronizacion("No se pudo conectar con Supabase. Los cambios siguen guardados; se reintentará al volver a la aplicación.");
         setSupabaseConectado(false);
         return;
       }
-      if (dbUsers.status === "fulfilled") {
-        const usuariosFiltrados = dbUsers.value.filter(
+      try {
+        const dbUsers = await dbFetchUsuarios();
+        const usuariosFiltrados = dbUsers.filter(
           (u) => u.activo || u.rol === "gerente"
         );
         setUsuarios(usuariosFiltrados);
-      } else {
-        console.error("No se pudieron cargar los usuarios desde Supabase:", dbUsers.reason);
+      } catch (error) {
+        console.error("No se pudieron cargar los usuarios desde Supabase:", error);
       }
 
       const pending = await loadOfflineChanges(requestedUserId);
-      const projectedRepuestos = [...dbReps.value];
-      const projectedHerramientas = dbHerrs.status === "fulfilled" ? [...dbHerrs.value] : [];
-      const projectedMovimientos = dbMovs.status === "fulfilled" ? [...dbMovs.value] : [];
+      const projectedRepuestos = [...datosServidor.repuestos];
+      const projectedHerramientas = [...datosServidor.herramientas];
+      const projectedMovimientos = [...datosServidor.movimientos];
       const projectedStock = new Map(projectedRepuestos.map((repuesto) => [repuesto.id, repuesto.existencia]));
       for (const change of pending) {
         switch (change.type) {
@@ -397,9 +419,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       setMovimientos(projectedMovimientos);
       setRespaldoListoParaUsuario(requestedUserId);
       const idMap = new Map<string, string>();
-      const existenciaActual = new Map(dbReps.value.map((repuesto) => [repuesto.id, repuesto.existencia]));
+      const existenciaActual = new Map(datosServidor.repuestos.map((repuesto) => [repuesto.id, repuesto.existencia]));
       for (const change of pending) {
-        if (!navigator.onLine) break;
+        if (!navigator.onLine) {
+          setErrorSincronizacion("Se perdió la conexión. Los cambios pendientes siguen guardados y se enviarán al reconectar.");
+          break;
+        }
         let aplicado = false;
         try {
           switch (change.type) {
@@ -476,8 +501,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           console.error("Error al sincronizar un cambio pendiente; se conservará para reintentar:", error);
         }
         if (!aplicado) {
-          setErrorSincronizacion("Hay cambios sin sincronizar. Verifica permisos, existencias y conexión; los cambios siguen guardados en este dispositivo.");
-          break;
+          setErrorSincronizacion(`No se pudo sincronizar el cambio de tipo "${change.type}". Sigue guardado en este dispositivo; revisa permisos, datos y conexión.`);
+          continue;
         }
         await removeOfflineChange(change.id);
       }
@@ -515,17 +540,31 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
+    let reintento: number | undefined;
     const actualizarConexion = () => {
       const online = navigator.onLine;
       setEnLinea(online);
       if (!online) setSupabaseConectado(false);
-      if (online && usuarioActual) void sincronizarConSupabase(usuarioActual.id);
+      if (online && usuarioActual) {
+        window.clearTimeout(reintento);
+        reintento = window.setTimeout(() => {
+          void sincronizarConSupabase(usuarioActual.id);
+        }, 1200);
+      }
+    };
+    const reintentarAlVolver = () => {
+      if (document.visibilityState === "visible") actualizarConexion();
     };
     window.addEventListener("online", actualizarConexion);
     window.addEventListener("offline", actualizarConexion);
+    window.addEventListener("focus", reintentarAlVolver);
+    document.addEventListener("visibilitychange", reintentarAlVolver);
     return () => {
+      window.clearTimeout(reintento);
       window.removeEventListener("online", actualizarConexion);
       window.removeEventListener("offline", actualizarConexion);
+      window.removeEventListener("focus", reintentarAlVolver);
+      document.removeEventListener("visibilitychange", reintentarAlVolver);
     };
   }, [sincronizarConSupabase, usuarioActual?.id]);
 

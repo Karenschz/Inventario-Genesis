@@ -308,11 +308,12 @@ export async function dbCrearRepuesto(r: Omit<Repuesto, "id">): Promise<string |
   try {
     let categoriaId = 10;
     const safeCat = sanitizeLikePattern(r.categoria);
-    const { data: catData } = await supabase
+    const { data: catData, error: categoryError } = await supabase
       .from("categorias_repuestos")
       .select("id")
       .ilike("nombre", safeCat)
       .limit(1);
+    if (categoryError) throw categoryError;
 
     if (catData && catData.length > 0) {
       categoriaId = catData[0].id;
@@ -321,31 +322,34 @@ export async function dbCrearRepuesto(r: Omit<Repuesto, "id">): Promise<string |
     let proveedorId = 1;
     if (r.proveedor) {
       const safeProv = sanitizeLikePattern(r.proveedor);
-      const { data: provData } = await supabase
+      const { data: provData, error: providerLookupError } = await supabase
         .from("proveedores")
         .select("id")
         .ilike("razon_social", safeProv)
         .limit(1);
+      if (providerLookupError) throw providerLookupError;
 
       if (provData && provData.length > 0) {
         proveedorId = provData[0].id;
       } else {
-        const { data: newProv } = await supabase
+        const { data: newProv, error: proveedorError } = await supabase
           .from("proveedores")
           .insert({ razon_social: r.proveedor.trim() })
           .select("id")
           .single();
+        if (proveedorError) throw proveedorError;
         if (newProv) proveedorId = newProv.id;
       }
     }
 
     let repuestoId: number | null = null;
     const safeCodigo = sanitizeLikePattern(r.codigo);
-    const { data: existingRep } = await supabase
+    const { data: existingRep, error: repuestoLookupError } = await supabase
       .from("repuestos")
       .select("id")
       .ilike("codigo_parte", safeCodigo)
       .limit(1);
+    if (repuestoLookupError) throw repuestoLookupError;
 
     if (existingRep && existingRep.length > 0) {
       repuestoId = existingRep[0].id;
@@ -364,23 +368,24 @@ export async function dbCrearRepuesto(r: Omit<Repuesto, "id">): Promise<string |
 
       if (repErr || !newRep) {
         console.error("Error insertando repuesto maestro:", repErr);
-        return null;
+        throw repErr ?? new Error("No se creó el registro maestro del repuesto.");
       }
       repuestoId = newRep.id;
     }
 
     const targetSucursalId = unmapSucursalId(r.sucursal);
 
-    const { data: existingInv } = await supabase
+    const { data: existingInv, error: inventoryLookupError } = await supabase
       .from("inventario_repuestos")
       .select("id")
       .eq("repuesto_id", repuestoId)
       .eq("sucursal_id", targetSucursalId)
       .limit(1);
+    if (inventoryLookupError) throw inventoryLookupError;
 
     if (existingInv && existingInv.length > 0) {
       const invId = existingInv[0].id;
-      await supabase
+      const { error: updateError } = await supabase
         .from("inventario_repuestos")
         .update({
           existencia: r.existencia,
@@ -391,6 +396,7 @@ export async function dbCrearRepuesto(r: Omit<Repuesto, "id">): Promise<string |
           ultima_compra: r.fechaUltimaCompra || new Date().toISOString().split("T")[0],
         })
         .eq("id", invId);
+      if (updateError) throw updateError;
       return String(invId);
     }
 
@@ -411,13 +417,13 @@ export async function dbCrearRepuesto(r: Omit<Repuesto, "id">): Promise<string |
 
     if (invErr || !newInv) {
       console.error("Error insertando inventario_repuesto:", invErr);
-      return String(repuestoId);
+      throw invErr ?? new Error("No se creó el registro de inventario del repuesto.");
     }
 
     return String(newInv.id);
   } catch (e) {
     console.error("Excepción al crear repuesto:", e);
-    return null;
+    throw e;
   }
 }
 
@@ -460,7 +466,12 @@ export async function dbActualizarRepuesto(r: Repuesto): Promise<boolean> {
       repuestoId = invSearch?.repuesto_id;
     }
 
-    if (repuestoId) {
+    if (!repuestoId) {
+      console.error("No existe el registro de inventario que se intenta actualizar:", r.id);
+      return false;
+    }
+
+    {
       // B. Resolver Categoria ID
       let categoriaId: number | null = null;
       if (r.categoria && r.categoria.trim()) {
@@ -608,18 +619,26 @@ export async function dbRegistrarMovimiento(params: {
 
   const sucursalId = unmapSucursalId(params.sucursal);
 
-  let targetInvId = Number(params.repuestoId);
-  if (isNaN(targetInvId)) {
-    const { data: foundInv } = await supabase
-      .from("inventario_repuestos")
-      .select("id, repuesto_id")
-      .eq("sucursal_id", sucursalId)
-      .limit(1);
-    if (foundInv && foundInv.length > 0) {
-      targetInvId = foundInv[0].id;
-    } else {
-      targetInvId = 1;
-    }
+  const targetInvId = Number(params.repuestoId);
+  if (!Number.isInteger(targetInvId) || targetInvId <= 0) {
+    console.error("ID de inventario inválido para registrar el movimiento:", params.repuestoId);
+    return false;
+  }
+
+  const { data: inventoryRow, error: inventoryLookupError } = await supabase
+    .from("inventario_repuestos")
+    .select("id, repuesto_id")
+    .eq("id", targetInvId)
+    .eq("sucursal_id", sucursalId)
+    .maybeSingle();
+  if (inventoryLookupError || !inventoryRow) {
+    console.error("No se encontró el inventario del movimiento:", inventoryLookupError);
+    return false;
+  }
+  const maestroRepuestoId = inventoryRow.repuesto_id;
+  if (!maestroRepuestoId) {
+    console.error("El inventario no está asociado a un repuesto:", targetInvId);
+    return false;
   }
 
   const { error: stockError } = await supabase
@@ -640,17 +659,6 @@ export async function dbRegistrarMovimiento(params: {
       .ilike("nombre", params.usuarioNombre)
       .limit(1);
     parsedUserId = foundUser && foundUser.length > 0 ? foundUser[0].id : 1;
-  }
-
-  let maestroRepuestoId = 1;
-  const { data: invRow } = await supabase
-    .from("inventario_repuestos")
-    .select("repuesto_id")
-    .eq("id", targetInvId)
-    .single();
-
-  if (invRow?.repuesto_id) {
-    maestroRepuestoId = invRow.repuesto_id;
   }
 
   const tipoUpper = params.tipo === "salida" ? "SALIDA" : "ENTRADA";
