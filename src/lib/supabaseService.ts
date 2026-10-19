@@ -635,6 +635,7 @@ export async function dbRegistrarMovimiento(params: {
 
   if (stockError) {
     console.error("Error actualizando stock en Supabase:", stockError);
+    return false;
   }
 
   let parsedUserId = Number(params.usuarioId);
@@ -700,7 +701,7 @@ export async function dbFetchMovimientos(): Promise<MovimientoInventario[]> {
 
   if (error) {
     console.error("Error cargando kardex:", error);
-    return [];
+    throw error;
   }
 
   return (data || []).map((row: any) => {
@@ -738,7 +739,7 @@ export async function dbFetchHerramientas(): Promise<Herramienta[]> {
 
   if (error) {
     console.error("Error cargando herramientas:", error);
-    return [];
+    throw error;
   }
 
   return (data || []).map((row: any) => ({
@@ -906,7 +907,7 @@ export async function dbFetchUsuarios(): Promise<Usuario[]> {
     .select("id, nombre, email, rol, sucursal_id, activo, password_temporal");
   if (error) {
     console.error("Error cargando usuarios:", error);
-    return [];
+    throw error;
   }
   return (data || []).map((row: any) => ({
     id: String(row.id),
@@ -1104,7 +1105,9 @@ export async function dbSolicitarRecuperacionPassword(
   const cleanEmail = email.trim().toLowerCase();
 
   try {
-    const { error: resetError } = await supabase.auth.resetPasswordForEmail(cleanEmail);
+    const { error: resetError } = await supabase.auth.resetPasswordForEmail(cleanEmail, {
+      redirectTo: `${window.location.origin}/?type=recovery`,
+    });
     if (resetError) {
       console.error("Error de Supabase Auth al enviar recuperación:", resetError);
       return { ok: false, error: resetError.message, authResent: false };

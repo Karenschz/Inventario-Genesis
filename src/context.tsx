@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useCallback } from "react";
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from "react";
 import type {
   Usuario,
   Repuesto,
@@ -26,6 +26,15 @@ import {
 } from "./data";
 import { isSupabaseConfigured, supabase } from "./lib/supabase";
 import {
+  enqueueOfflineChange,
+  loadOfflineChanges,
+  loadOfflineSnapshot,
+  remapOfflineEntityId,
+  removeOfflineChange,
+  saveOfflineSnapshot,
+  type OfflineChange,
+} from "./lib/offlineStorage";
+import {
   dbFetchRepuestos,
   dbFetchMovimientos,
   dbFetchHerramientas,
@@ -50,6 +59,14 @@ import {
   type ConnectionDiagnostic,
 } from "./lib/supabaseService";
 
+type OfflineChangeDraft = OfflineChange extends infer Change
+  ? Change extends OfflineChange
+    ? Omit<Change, "id" | "userId">
+    : never
+  : never;
+
+let offlineChangeSequence = 0;
+
 export type View =
   | "dashboard"
   | "inventario"
@@ -70,6 +87,9 @@ interface AppState {
   tema: "oscuro" | "claro";
   toggleTema: () => void;
   supabaseConectado: boolean;
+  enLinea: boolean;
+  cambiosPendientes: number;
+  errorSincronizacion: string | null;
   sincronizando: boolean;
   diagnostico: ConnectionDiagnostic | null;
   probarConexion: () => Promise<ConnectionDiagnostic>;
@@ -193,9 +213,56 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setTema((t) => (t === "oscuro" ? "claro" : "oscuro"));
   }, []);
 
-  const [supabaseConectado, setSupabaseConectado] = useState(isSupabaseConfigured);
+  const [enLinea, setEnLinea] = useState(() => navigator.onLine);
+  const [cambiosPendientes, setCambiosPendientes] = useState(0);
+  const [errorSincronizacion, setErrorSincronizacion] = useState<string | null>(null);
+  const [respaldoListoParaUsuario, setRespaldoListoParaUsuario] = useState<string | null>(null);
+  const [supabaseConectado, setSupabaseConectado] = useState(isSupabaseConfigured && navigator.onLine);
   const [sincronizando, setSincronizando] = useState(false);
   const [diagnostico, setDiagnostico] = useState<ConnectionDiagnostic | null>(null);
+  const sincronizacionActiva = useRef(false);
+  const sincronizacionSolicitada = useRef(false);
+  const usuarioIdActual = useRef<string | null>(null);
+
+  useEffect(() => {
+    usuarioIdActual.current = usuarioActual?.id ?? null;
+  }, [usuarioActual?.id]);
+
+  useEffect(() => {
+    if (!usuarioActual) {
+      setCambiosPendientes(0);
+      setRespaldoListoParaUsuario(null);
+      return;
+    }
+    setRespaldoListoParaUsuario(null);
+    let activo = true;
+    void Promise.all([
+      loadOfflineSnapshot(usuarioActual.id),
+      loadOfflineChanges(usuarioActual.id),
+    ]).then(([snapshot, changes]) => {
+      if (!activo) return;
+      if (snapshot && !navigator.onLine) {
+        setRepuestos(snapshot.repuestos);
+        setHerramientas(snapshot.herramientas);
+        setMovimientos(snapshot.movimientos);
+      }
+      setCambiosPendientes(changes.length);
+      if (!navigator.onLine) setRespaldoListoParaUsuario(usuarioActual.id);
+    }).catch((error: unknown) => {
+      console.error("No se pudieron recuperar los datos pendientes sin conexión:", error);
+    });
+    return () => {
+      activo = false;
+    };
+  }, [usuarioActual?.id]);
+
+  useEffect(() => {
+    if (!usuarioActual || respaldoListoParaUsuario !== usuarioActual.id) return;
+    void saveOfflineSnapshot(usuarioActual.id, { repuestos, herramientas, movimientos })
+      .catch((error: unknown) => {
+        console.error("No se pudo guardar el respaldo local del inventario:", error);
+      });
+  }, [usuarioActual?.id, respaldoListoParaUsuario, repuestos, herramientas, movimientos]);
 
   // Configuración de WhatsApp
   const [whatsAppConfig, setWhatsAppConfigState] = useState<WhatsAppConfig>(getWhatsAppConfig);
@@ -221,10 +288,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const uid = () => `id_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 
-  // Función para sincronizar datos directamente desde Supabase
-  const sincronizarConSupabase = useCallback(async () => {
-    if (!isSupabaseConfigured || !supabase) return;
+  // Sincroniza el respaldo local y aplica los cambios pendientes en orden.
+  const sincronizarConSupabase = useCallback(async (requestedUserId = usuarioIdActual.current) => {
+    if (!isSupabaseConfigured || !supabase || !navigator.onLine || !requestedUserId) return;
+    if (sincronizacionActiva.current) {
+      sincronizacionSolicitada.current = true;
+      return;
+    }
+    sincronizacionActiva.current = true;
+    sincronizacionSolicitada.current = false;
     setSincronizando(true);
+    setErrorSincronizacion(null);
 
     try {
       const [dbReps, dbMovs, dbHerrs, dbUsers] = await Promise.allSettled([
@@ -234,29 +308,173 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         dbFetchUsuarios(),
       ]);
 
-      if (dbReps.status === "fulfilled") {
-        setRepuestos(dbReps.value);
-      }
-      if (dbMovs.status === "fulfilled") {
-        setMovimientos(dbMovs.value);
-      }
-      if (dbHerrs.status === "fulfilled") {
-        setHerramientas(dbHerrs.value);
+      if (dbReps.status !== "fulfilled") {
+        console.error("No se pudo actualizar el inventario desde Supabase:", dbReps.reason);
+        setErrorSincronizacion("No se pudo conectar con Supabase. Los cambios siguen guardados en este dispositivo.");
+        setSupabaseConectado(false);
+        return;
       }
       if (dbUsers.status === "fulfilled") {
         const usuariosFiltrados = dbUsers.value.filter(
           (u) => u.activo || u.rol === "gerente"
         );
         setUsuarios(usuariosFiltrados);
+      } else {
+        console.error("No se pudieron cargar los usuarios desde Supabase:", dbUsers.reason);
       }
 
-      setSupabaseConectado(true);
+      const pending = await loadOfflineChanges(requestedUserId);
+      if (pending.length === 0) {
+        setRepuestos(dbReps.value);
+        if (dbMovs.status === "fulfilled") setMovimientos(dbMovs.value);
+        if (dbHerrs.status === "fulfilled") setHerramientas(dbHerrs.value);
+        setRespaldoListoParaUsuario(requestedUserId);
+      }
+      const idMap = new Map<string, string>();
+      const existenciaActual = new Map(dbReps.value.map((repuesto) => [repuesto.id, repuesto.existencia]));
+      for (const change of pending) {
+        if (!navigator.onLine) break;
+        let aplicado = false;
+        try {
+          switch (change.type) {
+            case "create-part": {
+              const id = await dbCrearRepuesto(change.value.part);
+              if (id) {
+                idMap.set(change.value.localId, id);
+                await remapOfflineEntityId(requestedUserId, change.value.localId, id);
+                existenciaActual.set(id, change.value.part.existencia);
+                setRepuestos((current) => current.map((item) =>
+                  item.id === change.value.localId ? { ...item, id } : item
+                ));
+                aplicado = true;
+              }
+              break;
+            }
+            case "update-part": {
+              const id = idMap.get(change.value.id) ?? change.value.id;
+              aplicado = await dbActualizarRepuesto({ ...change.value, id });
+              if (aplicado) existenciaActual.set(id, change.value.existencia);
+              break;
+            }
+            case "delete-part": {
+              const id = idMap.get(change.value.id) ?? change.value.id;
+              aplicado = await dbEliminarRepuesto(id);
+              if (aplicado) existenciaActual.delete(id);
+              break;
+            }
+            case "movement": {
+              const repuestoId = idMap.get(change.value.repuestoId) ?? change.value.repuestoId;
+              const stockAnterior = existenciaActual.get(repuestoId) ?? change.value.stockAnterior;
+              const stockResultante = change.value.tipo === "entrada"
+                ? stockAnterior + change.value.cantidad
+                : change.value.tipo === "salida"
+                  ? stockAnterior - change.value.cantidad
+                  : change.value.cantidad;
+              if (change.value.tipo === "salida" && stockResultante < 0) {
+                console.error("No se pudo sincronizar un movimiento: el stock actual es insuficiente.", change);
+                break;
+              }
+              aplicado = await dbRegistrarMovimiento({
+                ...change.value,
+                repuestoId,
+                stockAnterior,
+                stockResultante,
+              });
+              if (aplicado) existenciaActual.set(repuestoId, stockResultante);
+              break;
+            }
+            case "create-tool": {
+              const id = await dbCrearHerramienta(change.value.tool);
+              if (id) {
+                idMap.set(change.value.localId, id);
+                await remapOfflineEntityId(requestedUserId, change.value.localId, id);
+                setHerramientas((current) => current.map((item) =>
+                  item.id === change.value.localId ? { ...item, id } : item
+                ));
+                aplicado = true;
+              }
+              break;
+            }
+            case "update-tool": {
+              const id = idMap.get(change.value.id) ?? change.value.id;
+              aplicado = await dbActualizarHerramienta({ ...change.value, id });
+              break;
+            }
+            case "delete-tool": {
+              const id = idMap.get(change.value.id) ?? change.value.id;
+              aplicado = await dbEliminarHerramienta(id);
+              break;
+            }
+          }
+        } catch (error) {
+          console.error("Error al sincronizar un cambio pendiente; se conservará para reintentar:", error);
+        }
+        if (!aplicado) {
+          setErrorSincronizacion("Hay cambios sin sincronizar. Verifica permisos, existencias y conexión; los cambios siguen guardados en este dispositivo.");
+          break;
+        }
+        await removeOfflineChange(change.id);
+      }
+
+      const remaining = await loadOfflineChanges(requestedUserId);
+      setCambiosPendientes(remaining.length);
+      if (pending.length > 0 && remaining.length === 0) {
+        const [freshReps, freshMovs, freshTools] = await Promise.allSettled([
+          dbFetchRepuestos(),
+          dbFetchMovimientos(),
+          dbFetchHerramientas(),
+        ]);
+        if (freshReps.status === "fulfilled") setRepuestos(freshReps.value);
+        if (freshMovs.status === "fulfilled") setMovimientos(freshMovs.value);
+        if (freshTools.status === "fulfilled") setHerramientas(freshTools.value);
+        setRespaldoListoParaUsuario(requestedUserId);
+      }
+      setSupabaseConectado(navigator.onLine);
     } catch (err) {
-      console.warn("No se pudo sincronizar con Supabase, usando respaldo en memoria:", err);
+      console.error("No se pudo completar la sincronización con Supabase:", err);
+      setErrorSincronizacion("No se pudo sincronizar. Los cambios siguen guardados en este dispositivo.");
+      setSupabaseConectado(false);
     } finally {
+      sincronizacionActiva.current = false;
       setSincronizando(false);
+      if (
+        sincronizacionSolicitada.current &&
+        navigator.onLine &&
+        usuarioIdActual.current === requestedUserId
+      ) {
+        sincronizacionSolicitada.current = false;
+        queueMicrotask(() => void sincronizarConSupabase(requestedUserId));
+      }
     }
   }, []);
+
+  useEffect(() => {
+    const actualizarConexion = () => {
+      const online = navigator.onLine;
+      setEnLinea(online);
+      if (!online) setSupabaseConectado(false);
+      if (online && usuarioActual) void sincronizarConSupabase(usuarioActual.id);
+    };
+    window.addEventListener("online", actualizarConexion);
+    window.addEventListener("offline", actualizarConexion);
+    return () => {
+      window.removeEventListener("online", actualizarConexion);
+      window.removeEventListener("offline", actualizarConexion);
+    };
+  }, [sincronizarConSupabase, usuarioActual?.id]);
+
+  const guardarCambioPendiente = async (change: OfflineChangeDraft) => {
+    if (!usuarioActual) throw new Error("Inicia sesión para guardar cambios del inventario.");
+    if (!isSupabaseConfigured || !supabase) return;
+    const pendingChange: OfflineChange = {
+      ...change,
+      id: `${String(Date.now()).padStart(13, "0")}_${String(++offlineChangeSequence).padStart(6, "0")}_${Math.random().toString(36).slice(2)}`,
+      userId: usuarioActual.id,
+    };
+    await enqueueOfflineChange(pendingChange);
+    setCambiosPendientes((count) => count + 1);
+    if (navigator.onLine) void sincronizarConSupabase(usuarioActual.id);
+  };
 
   // Diagnóstico de Conexión
   const probarConexion = useCallback(async (): Promise<ConnectionDiagnostic> => {
@@ -301,7 +519,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         setUsuarioActual(usuario);
         setDebeCambiarPassword(esRecuperacion || Boolean(usuario?.passwordTemporal));
         if (usuario) {
-          void sincronizarConSupabase();
+          void sincronizarConSupabase(usuario.id);
           void probarConexion();
         } else {
           const { error } = await client.auth.signOut();
@@ -363,7 +581,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           setDebeCambiarPassword(true);
         }
         setVistaActual("dashboard");
-        void sincronizarConSupabase();
+        void sincronizarConSupabase(res.usuario.id);
         return { ok: true };
       }
       return { ok: false, error: res.error || "Credenciales incorrectas o usuario inactivo." };
@@ -547,21 +765,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const agregarRepuesto = async (r: Omit<Repuesto, "id">) => {
     const localId = uid();
     const nuevoRepuesto: Repuesto = { ...r, id: localId };
+    await guardarCambioPendiente({
+      type: "create-part",
+      value: { localId, part: r },
+    });
     setRepuestos((prev) => [nuevoRepuesto, ...prev]);
-
-    if (isSupabaseConfigured && supabase) {
-      setSincronizando(true);
-      try {
-        const dbId = await dbCrearRepuesto(r);
-        if (dbId) {
-          setRepuestos((prev) =>
-            prev.map((item) => (item.id === localId ? { ...item, id: dbId } : item))
-          );
-        }
-      } finally {
-        setSincronizando(false);
-      }
-    }
   };
 
   const editarRepuesto = async (r: Repuesto) => {
@@ -585,34 +793,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       }).catch((e) => console.warn("Error enviando alerta WhatsApp en edición:", e));
     }
 
+    await guardarCambioPendiente({ type: "update-part", value: r });
     setRepuestos((prev) => prev.map((x) => (x.id === r.id ? r : x)));
-    if (isSupabaseConfigured && supabase) {
-      setSincronizando(true);
-      try {
-        const ok = await dbActualizarRepuesto(r);
-        if (!ok) {
-          await sincronizarConSupabase();
-        }
-      } finally {
-        setSincronizando(false);
-      }
-    }
   };
 
   const eliminarRepuesto = async (id: string) => {
-    const prevReps = [...repuestos];
+    await guardarCambioPendiente({ type: "delete-part", value: { id } });
     setRepuestos((prev) => prev.filter((x) => x.id !== id));
-    if (isSupabaseConfigured && supabase) {
-      setSincronizando(true);
-      try {
-        const ok = await dbEliminarRepuesto(id);
-        if (!ok) {
-          setRepuestos(prevReps);
-        }
-      } finally {
-        setSincronizando(false);
-      }
-    }
   };
 
   // Movimientos Kardex
@@ -689,10 +876,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       notas: notas?.trim() || undefined,
     };
 
-    setMovimientos((prev) => [nuevoMovimiento, ...prev]);
-
-    if (isSupabaseConfigured && supabase) {
-      dbRegistrarMovimiento({
+    await guardarCambioPendiente({
+      type: "movement",
+      value: {
         repuestoId: rep.id,
         repuestoNombre: rep.nombre,
         repuestoCodigo: rep.codigo,
@@ -706,8 +892,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         usuarioId: usuarioActual.id,
         usuarioNombre: usuarioActual.nombre,
         notas,
-      }).catch((e) => console.error("Error al persistir en Supabase:", e));
-    }
+      },
+    });
+    setMovimientos((prev) => [nuevoMovimiento, ...prev]);
 
     // Alerta automática a WhatsApp cuando el producto se agota (stock llega a 0)
     if (whatsAppConfig.activo && stockAnterior > 0 && nuevoStock <= 0) {
@@ -750,29 +937,21 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   // Herramientas
   const agregarHerramienta = async (h: Omit<Herramienta, "id">) => {
     const localId = uid();
+    await guardarCambioPendiente({
+      type: "create-tool",
+      value: { localId, tool: h },
+    });
     setHerramientas((prev) => [...prev, { ...h, id: localId }]);
-    if (isSupabaseConfigured && supabase) {
-      const dbId = await dbCrearHerramienta(h);
-      if (dbId) {
-        setHerramientas((prev) =>
-          prev.map((x) => (x.id === localId ? { ...x, id: dbId } : x))
-        );
-      }
-    }
   };
 
   const editarHerramienta = async (h: Herramienta) => {
+    await guardarCambioPendiente({ type: "update-tool", value: h });
     setHerramientas((prev) => prev.map((x) => (x.id === h.id ? h : x)));
-    if (isSupabaseConfigured && supabase) {
-      await dbActualizarHerramienta(h);
-    }
   };
 
   const eliminarHerramienta = async (id: string) => {
+    await guardarCambioPendiente({ type: "delete-tool", value: { id } });
     setHerramientas((prev) => prev.filter((x) => x.id !== id));
-    if (isSupabaseConfigured && supabase) {
-      await dbEliminarHerramienta(id);
-    }
   };
 
   // Usuarios
@@ -883,6 +1062,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         tema,
         toggleTema,
         supabaseConectado,
+        enLinea,
+        cambiosPendientes,
+        errorSincronizacion,
         sincronizando,
         diagnostico,
         probarConexion,

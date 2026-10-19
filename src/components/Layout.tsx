@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useApp } from "../context";
 import { SUCURSALES } from "../data";
 import ModalConfigWhatsApp from "./ModalConfigWhatsApp";
@@ -10,6 +10,11 @@ type NavItem = {
   icon: React.ReactNode;
   soloGerente?: boolean;
 };
+
+interface InstallPromptEvent extends Event {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: "accepted" | "dismissed" }>;
+}
 
 const navItems: NavItem[] = [
   {
@@ -93,12 +98,27 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     whatsAppConfig,
     actualizarWhatsAppConfig,
     debeCambiarPassword,
+    enLinea,
+    cambiosPendientes,
+    errorSincronizacion,
+    sincronizando,
+    sincronizarConSupabase,
   } = useApp();
 
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [modalWhatsAppOpen, setModalWhatsAppOpen] = useState(false);
   const [modalPassVoluntario, setModalPassVoluntario] = useState(false);
+  const [installPrompt, setInstallPrompt] = useState<InstallPromptEvent | null>(null);
+
+  useEffect(() => {
+    const captureInstallPrompt = (event: Event) => {
+      event.preventDefault();
+      setInstallPrompt(event as InstallPromptEvent);
+    };
+    window.addEventListener("beforeinstallprompt", captureInstallPrompt);
+    return () => window.removeEventListener("beforeinstallprompt", captureInstallPrompt);
+  }, []);
 
   const whatsappListo = Boolean(
     whatsAppConfig?.activo &&
@@ -146,6 +166,20 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         </div>
 
         <div className="flex items-center gap-1">
+          <button
+            onClick={() => {
+              if (enLinea) void sincronizarConSupabase();
+            }}
+            disabled={!enLinea || sincronizando}
+            title={errorSincronizacion || (enLinea ? "Conectado" : "Sin internet; cambios guardados localmente")}
+            aria-label={enLinea ? "Conectado" : "Sin internet"}
+            className={`flex items-center gap-1 rounded-full px-2 py-1 text-[10px] font-medium ${
+              enLinea ? "text-emerald-400" : "text-amber-300"
+            }`}
+          >
+            <span className={`w-2 h-2 rounded-full ${enLinea ? "bg-emerald-400" : "bg-amber-300"}`} />
+            {cambiosPendientes > 0 && <span>{cambiosPendientes}</span>}
+          </button>
           <button
             onClick={() => setModalWhatsAppOpen(true)}
             title={
@@ -321,6 +355,48 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 
         {/* Perfil / WhatsApp / Alternar Tema / Cierre de Sesión */}
         <div className="p-3 border-t border-[var(--border)] shrink-0 space-y-2">
+          <button
+            onClick={() => {
+              if (enLinea) void sincronizarConSupabase();
+            }}
+            disabled={!enLinea || sincronizando}
+            title={errorSincronizacion || (enLinea ? "Estado de conexión y sincronización" : "Trabajando sin internet")}
+            className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md text-xs font-medium border transition-colors disabled:cursor-default ${
+              enLinea
+                ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-400"
+                : "bg-amber-500/10 border-amber-500/20 text-amber-300"
+            } ${!sidebarOpen ? "md:justify-center" : ""}`}
+          >
+            <span className={`w-2 h-2 rounded-full shrink-0 ${enLinea ? "bg-emerald-400" : "bg-amber-300"}`} />
+            <span className={!sidebarOpen ? "md:hidden" : ""}>
+              {!enLinea
+                ? "Sin internet"
+                : sincronizando
+                  ? "Sincronizando..."
+                  : cambiosPendientes > 0
+                    ? `${cambiosPendientes} cambio(s) pendiente(s)`
+                    : "Conectado"}
+            </span>
+          </button>
+          {errorSincronizacion && sidebarOpen && (
+            <p role="status" className="px-2.5 text-[10px] text-amber-300">
+              {errorSincronizacion}
+            </p>
+          )}
+          {installPrompt && (
+            <button
+              onClick={async () => {
+                await installPrompt.prompt();
+                await installPrompt.userChoice;
+                setInstallPrompt(null);
+              }}
+              className={`w-full px-2.5 py-1.5 rounded-md text-xs font-medium text-[var(--foreground)] bg-[var(--secondary)] hover:bg-[var(--muted)] transition-colors ${
+                !sidebarOpen ? "md:hidden" : ""
+              }`}
+            >
+              Instalar aplicación
+            </button>
+          )}
           {/* Botón de Configuración de WhatsApp */}
           <button
             onClick={() => setModalWhatsAppOpen(true)}
