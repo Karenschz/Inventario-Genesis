@@ -67,6 +67,19 @@ type OfflineChangeDraft = OfflineChange extends infer Change
 
 let offlineChangeSequence = 0;
 
+function describirError(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string") return error;
+  if (error && typeof error === "object") {
+    const detalle = error as Record<string, unknown>;
+    const campos = ["message", "details", "hint", "code"]
+      .map((campo) => detalle[campo])
+      .filter((valor): valor is string => typeof valor === "string" && valor.length > 0);
+    if (campos.length) return campos.join(" — ");
+  }
+  return "El servidor devolvió un error sin detalle legible. Revisa la consola del navegador.";
+}
+
 export type View =
   | "dashboard"
   | "inventario"
@@ -500,7 +513,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           }
         } catch (error) {
           console.error("Error al sincronizar un cambio pendiente; se conservará para reintentar:", error);
-          detalleError = error instanceof Error ? error.message : String(error);
+          detalleError = describirError(error);
         }
         if (!aplicado) {
           const detalle = detalleError ? ` Motivo: ${detalleError}` : " Revisa permisos, datos y conexión.";

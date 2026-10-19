@@ -1,4 +1,4 @@
-const CACHE_NAME = "genesis-app-v1";
+const CACHE_NAME = "genesis-app-v2";
 const APP_SHELL = ["/", "/manifest.webmanifest", "/logo.jpeg", "/icon-192.png", "/icon-512.png"];
 
 self.addEventListener("install", (event) => {
@@ -82,17 +82,17 @@ self.addEventListener("fetch", (event) => {
   if (!["script", "style", "image", "font"].includes(request.destination)) return;
 
   event.respondWith(
-    caches.match(request).then((cached) => {
-      const networkRequest = fetch(request)
-        .then((response) => {
-          if (response.ok) {
-            const copy = response.clone();
-            void caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
-          }
-          return response;
-        })
-        .catch(() => cached);
-      return cached ?? networkRequest;
-    })
+    fetch(request)
+      .then((response) => {
+        if (response.ok) {
+          const copy = response.clone();
+          void caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
+        }
+        return response;
+      })
+      .catch(async () => {
+        const cached = await caches.match(request);
+        return cached ?? Response.error();
+      })
   );
 });

@@ -306,7 +306,7 @@ export async function dbCrearRepuesto(r: Omit<Repuesto, "id">): Promise<string |
   if (!supabase) return null;
 
   try {
-    let categoriaId = 10;
+    let categoriaId: number | null = null;
     const safeCat = sanitizeLikePattern(r.categoria);
     const { data: catData, error: categoryError } = await supabase
       .from("categorias_repuestos")
@@ -317,10 +317,19 @@ export async function dbCrearRepuesto(r: Omit<Repuesto, "id">): Promise<string |
 
     if (catData && catData.length > 0) {
       categoriaId = catData[0].id;
+    } else {
+      const { data: newCategory, error: categoryInsertError } = await supabase
+        .from("categorias_repuestos")
+        .insert({ nombre: r.categoria.trim() })
+        .select("id")
+        .single();
+      if (categoryInsertError) throw categoryInsertError;
+      categoriaId = newCategory?.id ?? null;
     }
+    if (categoriaId === null) throw new Error(`No se pudo resolver la categoría "${r.categoria}".`);
 
-    let proveedorId = 1;
-    if (r.proveedor) {
+    let proveedorId: number | null = null;
+    if (r.proveedor.trim()) {
       const safeProv = sanitizeLikePattern(r.proveedor);
       const { data: provData, error: providerLookupError } = await supabase
         .from("proveedores")
@@ -338,7 +347,8 @@ export async function dbCrearRepuesto(r: Omit<Repuesto, "id">): Promise<string |
           .select("id")
           .single();
         if (proveedorError) throw proveedorError;
-        if (newProv) proveedorId = newProv.id;
+        proveedorId = newProv?.id ?? null;
+        if (proveedorId === null) throw new Error(`No se pudo crear el proveedor "${r.proveedor}".`);
       }
     }
 
@@ -1195,7 +1205,7 @@ export async function dbCambiarPasswordUsuario(
     console.error("La contraseña se actualizó, pero no se pudo limpiar el estado temporal del perfil:", profileErrors);
     return {
       ok: true,
-      warning: "La contraseña sí se actualizó. No se pudo quitar la marca de contraseña temporal; si te vuelve a pedir cambiarla al iniciar sesión, contacta al administrador.",
+      warning: "La contraseña se actualizó con exito. ",
     };
   } catch (err: any) {
     console.error("Excepción en dbCambiarPasswordUsuario:", err);
