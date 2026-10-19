@@ -543,59 +543,78 @@ export async function dbActualizarRepuesto(r: Repuesto): Promise<boolean> {
 
 // 4. Eliminar Repuesto en Supabase
 export async function dbEliminarRepuesto(id: string): Promise<boolean> {
-  if (!supabase) return false;
+  if (!supabase) throw new Error("Supabase no está configurado.");
   try {
-    const numId = parseInt(id);
-    if (isNaN(numId)) return false;
+    if (!/^\d+$/.test(id)) throw new Error(`El identificador "${id}" no es un ID válido de Supabase.`);
+    const numId = Number(id);
 
-    // 1. Obtener repuesto_id asociado
-    const { data: invRow } = await supabase
+    const { data: invRow, error: inventoryLookupError } = await supabase
       .from("inventario_repuestos")
       .select("repuesto_id")
       .eq("id", numId)
       .maybeSingle();
+    if (inventoryLookupError) throw inventoryLookupError;
+    if (!invRow) return true;
 
     const repuestoId = invRow?.repuesto_id;
 
-    // 2. Eliminar referencias en movimientos_kardex para evitar error 409 (Foreign Key Violation)
     if (repuestoId) {
-      await supabase
+      const { error: movementByPartError } = await supabase
         .from("movimientos_kardex")
         .delete()
         .eq("repuesto_id", repuestoId);
+      if (movementByPartError) throw movementByPartError;
     }
-    await supabase
+    const { error: movementByInventoryError } = await supabase
       .from("movimientos_kardex")
       .delete()
       .eq("inventario_id", numId);
+    if (movementByInventoryError) throw movementByInventoryError;
 
-    // 3. Eliminar de inventario_repuestos
-    const { error: invDeleteErr } = await supabase
+    const { data: deletedInventory, error: invDeleteErr } = await supabase
       .from("inventario_repuestos")
       .delete()
-      .eq("id", numId);
+      .eq("id", numId)
+      .select("id");
 
     if (invDeleteErr) {
       console.error("Error eliminando de inventario_repuestos:", invDeleteErr);
-      return false;
+      throw invDeleteErr;
+    }
+    if (!deletedInventory?.length) {
+      throw new Error("Supabase no eliminó el registro de inventario. Verifica los permisos de borrado (políticas RLS) de tu usuario.");
     }
 
-    // 4. Si ninguna otra fila usa este repuesto maestro, eliminar de repuestos
     if (repuestoId) {
-      const { count } = await supabase
+      const { count, error: countError } = await supabase
         .from("inventario_repuestos")
         .select("id", { count: "exact", head: true })
         .eq("repuesto_id", repuestoId);
+      if (countError) {
+        console.warn("Se eliminó el inventario, pero no se pudo verificar si el repuesto maestro quedó sin sucursales:", countError);
+        return true;
+      }
 
       if (count === 0) {
-        await supabase.from("repuestos").delete().eq("id", repuestoId);
+        const { data: deletedPart, error: partDeleteError } = await supabase
+          .from("repuestos")
+          .delete()
+          .eq("id", repuestoId)
+          .select("id");
+        if (partDeleteError) {
+          console.warn("Se eliminó el inventario, pero no se pudo limpiar el repuesto maestro:", partDeleteError);
+          return true;
+        }
+        if (!deletedPart?.length) {
+          console.warn("Se eliminó el inventario, pero Supabase no permitió limpiar el repuesto maestro. Verifica las políticas RLS.");
+        }
       }
     }
 
     return true;
   } catch (e) {
     console.error("Error eliminando repuesto:", e);
-    return false;
+    throw e;
   }
 }
 
@@ -1136,7 +1155,7 @@ export async function dbSolicitarRecuperacionPassword(
 export async function dbCambiarPasswordUsuario(
   nuevaPassword: string,
   email?: string
-): Promise<{ ok: boolean; error?: string }> {
+): Promise<{ ok: boolean; error?: string; warning?: string }> {
   if (!supabase) return { ok: false, error: "Base de datos Supabase no configurada." };
 
   const cleanPass = nuevaPassword;
@@ -1154,16 +1173,30 @@ export async function dbCambiarPasswordUsuario(
       return { ok: false, error: passwordError.message || "Supabase Auth no pudo actualizar la contraseña." };
     }
 
-    const { error: profileError } = await supabase.rpc("genesis_clear_own_temporary_password");
-    if (profileError) {
-      console.error("La contraseña se actualizó, pero no se pudo cerrar el estado temporal:", profileError);
-      return {
-        ok: false,
-        error: "La contraseña se actualizó, pero no se pudo actualizar el perfil. Contacta al administrador.",
-      };
+    const { data: updatedProfile, error: profileUpdateError } = await supabase
+      .from("usuarios")
+      .update({ password_temporal: false })
+      .eq("auth_id", data.user.id)
+      .select("id")
+      .maybeSingle();
+
+    if (!profileUpdateError && updatedProfile) {
+      return { ok: true };
     }
 
-    return { ok: true };
+    const { error: rpcError } = await supabase.rpc("genesis_clear_own_temporary_password");
+    if (!rpcError) return { ok: true };
+
+    const profileErrors = [
+      profileUpdateError?.message,
+      !updatedProfile && !profileUpdateError ? "No se encontró un perfil actualizable para esta cuenta." : undefined,
+      rpcError.message,
+    ].filter(Boolean).join(" | ");
+    console.error("La contraseña se actualizó, pero no se pudo limpiar el estado temporal del perfil:", profileErrors);
+    return {
+      ok: true,
+      warning: "La contraseña sí se actualizó. No se pudo quitar la marca de contraseña temporal; si te vuelve a pedir cambiarla al iniciar sesión, contacta al administrador.",
+    };
   } catch (err: any) {
     console.error("Excepción en dbCambiarPasswordUsuario:", err);
     return { ok: false, error: "Error inesperado al cambiar contraseña." };

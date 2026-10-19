@@ -121,7 +121,7 @@ interface AppState {
   debeCambiarPassword: boolean;
   setDebeCambiarPassword: (debe: boolean) => void;
   solicitarRecuperacionPassword: (email: string) => Promise<PasswordRecoveryResult>;
-  cambiarMiPassword: (nuevaPassword: string, conservarRecuperacion?: boolean) => Promise<{ ok: boolean; error?: string }>;
+  cambiarMiPassword: (nuevaPassword: string, conservarRecuperacion?: boolean) => Promise<{ ok: boolean; error?: string; warning?: string }>;
 }
 
 // Helpers para rastreo de contraseñas temporales activas
@@ -426,6 +426,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           break;
         }
         let aplicado = false;
+        let detalleError: string | undefined;
         try {
           switch (change.type) {
             case "create-part": {
@@ -499,9 +500,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           }
         } catch (error) {
           console.error("Error al sincronizar un cambio pendiente; se conservará para reintentar:", error);
+          detalleError = error instanceof Error ? error.message : String(error);
         }
         if (!aplicado) {
-          setErrorSincronizacion(`No se pudo sincronizar el cambio de tipo "${change.type}". Sigue guardado en este dispositivo; revisa permisos, datos y conexión.`);
+          const detalle = detalleError ? ` Motivo: ${detalleError}` : " Revisa permisos, datos y conexión.";
+          setErrorSincronizacion(`No se pudo sincronizar el cambio de tipo "${change.type}". Sigue guardado en este dispositivo.${detalle}`);
           continue;
         }
         await removeOfflineChange(change.id);
@@ -672,7 +675,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const login = async (
     email: string,
     password: string
-  ): Promise<{ ok: boolean; error?: string }> => {
+  ): Promise<{ ok: boolean; error?: string; warning?: string }> => {
     if (isSupabaseConfigured && supabase) {
       const res = await dbLoginUsuario(email, password);
       if (res.ok && res.usuario) {
@@ -808,7 +811,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const cambiarMiPassword = async (
     nuevaPassword: string,
     conservarRecuperacion = false
-  ): Promise<{ ok: boolean; error?: string }> => {
+  ): Promise<{ ok: boolean; error?: string; warning?: string }> => {
     if (!nuevaPassword.trim() || nuevaPassword.length < 6) {
       return { ok: false, error: "La contraseña debe tener al menos 6 caracteres." };
     }
@@ -825,6 +828,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       return { ok: false, error: "No hay una sesión válida para restablecer la contraseña." };
     }
 
+    let warning: string | undefined;
     if (isSupabaseConfigured && supabase) {
       setSincronizando(true);
       try {
@@ -832,6 +836,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         if (!resDb.ok) {
           return { ok: false, error: resDb.error || "No se pudo actualizar la contraseña." };
         }
+        warning = resDb.warning;
       } catch (e: any) {
         console.error("Error cambiando contraseña en Supabase:", e);
         return { ok: false, error: "Error de conexión al actualizar la contraseña." };
@@ -860,7 +865,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
     if (!conservarRecuperacion) setDebeCambiarPassword(false);
 
-    return { ok: true };
+    return { ok: true, warning };
   };
 
   const setVista = (v: View) => setVistaActual(v);
