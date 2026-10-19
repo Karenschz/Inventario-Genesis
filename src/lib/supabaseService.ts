@@ -31,6 +31,167 @@ export function sanitizeLikePattern(pattern: string): string {
   return pattern.replace(/[%_]/g, "\\$&").trim();
 }
 
+const BACKUP_TABLES = [
+  "sucursales",
+  "categorias_repuestos",
+  "proveedores",
+  "usuarios",
+  "repuestos",
+  "inventario_repuestos",
+  "herramientas",
+  "movimientos_kardex",
+] as const;
+
+export type BackupTableName = (typeof BACKUP_TABLES)[number];
+const USER_EXPORT_COLUMNS =
+  "id, auth_id, sucursal_id, nombre, email, rol, activo, password_temporal";
+
+function sqlIdentificador(identifier: string): string {
+  return `"${identifier.replace(/"/g, '""')}"`;
+}
+
+function sqlJsonb(value: unknown): string {
+  return `'${JSON.stringify(value).replace(/'/g, "''")}'::jsonb`;
+}
+
+function crearInsercionesRespaldo(
+  table: string,
+  rows: Record<string, unknown>[]
+): string[] {
+  if (table === "usuarios") {
+    return rows.flatMap((row) => {
+      const fields = Object.keys(row).filter((field) => field !== "id");
+      if (row.id === undefined || fields.length === 0) return [];
+
+      const assignments = fields
+        .map((field) => `  ${sqlIdentificador(field)} = datos.${sqlIdentificador(field)}`)
+        .join(",\n");
+
+      return [
+        `UPDATE public.${sqlIdentificador(table)} AS actual\n` +
+          `SET\n${assignments}\n` +
+          `FROM jsonb_populate_record(NULL::public.${sqlIdentificador(table)}, ${sqlJsonb(row)}) AS datos\n` +
+          `WHERE actual.${sqlIdentificador("id")} = datos.${sqlIdentificador("id")};`,
+      ];
+    });
+  }
+
+  const statements: string[] = [];
+  const chunkSize = 250;
+
+  for (let index = 0; index < rows.length; index += chunkSize) {
+    const batch = rows.slice(index, index + chunkSize);
+    statements.push(
+      `INSERT INTO public.${sqlIdentificador(table)}\n` +
+        `SELECT *\n` +
+        `FROM jsonb_populate_recordset(NULL::public.${sqlIdentificador(table)}, ${sqlJsonb(batch)})\n` +
+        `ON CONFLICT DO NOTHING;`
+    );
+  }
+
+  return statements;
+}
+
+export async function dbExportarRespaldo(): Promise<string> {
+  if (!supabase || !isSupabaseConfigured) {
+    throw new Error("Supabase no está configurado.");
+  }
+
+  const statements: string[] = [];
+  const pageSize = 1000;
+
+  for (const table of BACKUP_TABLES) {
+    const rows: Record<string, unknown>[] = [];
+    let from = 0;
+
+    while (true) {
+      const result = table === "usuarios"
+        ? await supabase
+            .from("usuarios")
+            .select(USER_EXPORT_COLUMNS)
+            .range(from, from + pageSize - 1)
+        : await supabase
+            .from(table)
+            .select("*")
+            .range(from, from + pageSize - 1);
+
+      if (result.error) {
+        throw new Error(`No se pudo exportar la tabla ${table}: ${result.error.message}`);
+      }
+
+      const page = (result.data || []) as Record<string, unknown>[];
+      rows.push(...page);
+      if (page.length < pageSize) break;
+      from += pageSize;
+    }
+
+    const safeRows = rows;
+    statements.push(...crearInsercionesRespaldo(table, safeRows));
+  }
+
+  return [
+    "-- Respaldo de datos de Genesis generado desde la aplicacion.",
+    `-- Fecha de exportacion: ${new Date().toISOString()}`,
+    "-- Inserta filas faltantes sin duplicar; no elimina datos existentes.",
+    "-- Usuarios: actualiza perfiles existentes por ID; omite contrasenas.",
+    "-- Requiere que el esquema y las tablas de Supabase ya existan.",
+    "BEGIN;",
+    ...statements,
+    "COMMIT;",
+    "",
+  ].join("\n\n");
+}
+
+export async function dbExportarTablaCSV(table: BackupTableName): Promise<string> {
+  if (!supabase || !isSupabaseConfigured) {
+    throw new Error("Supabase no está configurado.");
+  }
+
+  const rows: Record<string, unknown>[] = [];
+  const pageSize = 1000;
+  let from = 0;
+
+  while (true) {
+    const result = table === "usuarios"
+      ? await supabase
+          .from("usuarios")
+          .select(USER_EXPORT_COLUMNS)
+          .range(from, from + pageSize - 1)
+      : await supabase
+          .from(table)
+          .select("*")
+          .range(from, from + pageSize - 1);
+
+    if (result.error) {
+      throw new Error(`No se pudo exportar la tabla ${table}: ${result.error.message}`);
+    }
+
+    const page = (result.data || []) as Record<string, unknown>[];
+    rows.push(...page);
+    if (page.length < pageSize) break;
+    from += pageSize;
+  }
+
+  const safeRows = rows;
+  const columns = Object.keys(safeRows[0] || {});
+  if (columns.length === 0) return "";
+
+  const csvCell = (value: unknown) => {
+    const text = value !== null && typeof value === "object"
+      ? JSON.stringify(value)
+      : String(value ?? "");
+    const safeText = typeof value === "string" && /^[=+@\-\t\r]/.test(text)
+      ? `'${text}`
+      : text;
+    return `"${safeText.replace(/"/g, '""')}"`;
+  };
+
+  return [
+    columns.map(csvCell).join(","),
+    ...safeRows.map((row) => columns.map((column) => csvCell(row[column])).join(",")),
+  ].join("\r\n") + "\r\n";
+}
+
 // 0. Diagnóstico de Conexión
 export interface ConnectionDiagnostic {
   ok: boolean;
@@ -70,15 +231,15 @@ export async function dbProbarConexion(): Promise<ConnectionDiagnostic> {
 
   for (const table of tablesToCheck) {
     try {
-      const { count, error } = await supabase
-        .from(table)
-        .select("*", { count: "exact", head: true });
+      const result = table === "usuarios"
+        ? await supabase.from("usuarios").select("id", { count: "exact", head: true })
+        : await supabase.from(table).select("*", { count: "exact", head: true });
 
-      if (error) {
-        tableResults[table] = { ok: false, count: 0, error: error.message };
+      if (result.error) {
+        tableResults[table] = { ok: false, count: 0, error: result.error.message };
         anyError = true;
       } else {
-        tableResults[table] = { ok: true, count: count ?? 0 };
+        tableResults[table] = { ok: true, count: result.count ?? 0 };
       }
     } catch (err: any) {
       tableResults[table] = { ok: false, count: 0, error: err?.message || "Error al consultar" };
@@ -653,73 +814,39 @@ export async function dbLoginUsuario(
 
   try {
     // 1. Autenticación oficial usando Supabase Auth nativo
-    let { data: authData, error: authError } = await supabase.auth.signInWithPassword({
+    const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
       email: cleanEmail,
       password: pass,
     });
 
-    let authUser = authData?.user;
-
-    // 2. Traer el perfil complementario filtrando por auth_id o por email en la tabla usuarios
-    let userData: any = null;
-
-    if (authUser) {
-      const { data: byAuthId } = await supabase
-        .from("usuarios")
-        .select("*")
-        .eq("auth_id", authUser.id)
-        .maybeSingle();
-      if (byAuthId) {
-        userData = byAuthId;
-      }
-    }
-
-    // Fallback: Si no se encontró por auth_id o si Supabase Auth requiere verificación de correo
-    if (!userData) {
-      const { data: byEmail } = await supabase
-        .from("usuarios")
-        .select("*")
-        .ilike("email", cleanEmail)
-        .maybeSingle();
-
-      if (byEmail && (byEmail.password_hash === pass || !byEmail.password_hash)) {
-        userData = byEmail;
-
-        // Auto-registro automático en Supabase Auth si el usuario no existe aún en auth.users
-        if (!authUser) {
-          try {
-            const { data: newAuth } = await supabase.auth.signUp({
-              email: cleanEmail,
-              password: pass,
-            });
-            if (newAuth?.user) {
-              authUser = newAuth.user;
-            }
-          } catch (e) {
-            console.warn("Aviso en auto-registro diferido en Supabase Auth:", e);
-          }
-        }
-
-        if (authUser?.id) {
-          try {
-            await supabase
-              .from("usuarios")
-              .update({ auth_id: authUser.id })
-              .eq("id", byEmail.id);
-          } catch {
-            // Ignorar
-          }
-        }
-      }
-    }
-
-    if (!userData) {
-      console.error("Error al autenticar usuario:", authError?.message);
+    if (authError || !authData.user) {
       return { ok: false, error: "Credenciales incorrectas o usuario inactivo." };
     }
 
-    if (!userData.activo) {
-      return { ok: false, error: "El usuario se encuentra inactivo." };
+    const { data: userData, error: profileError } = await supabase
+      .from("usuarios")
+      .select("id, nombre, email, rol, sucursal_id, activo, password_temporal")
+      .eq("auth_id", authData.user.id)
+      .maybeSingle();
+
+    if (profileError) {
+      await supabase.auth.signOut();
+      console.error("Error al cargar el perfil autenticado:", profileError);
+      return { ok: false, error: "No se pudo validar el perfil. Contacta al administrador." };
+    }
+
+    if (!userData || !userData.activo) {
+      await supabase.auth.signOut();
+      return {
+        ok: false,
+        error: userData ? "El usuario se encuentra inactivo." : "No existe un perfil asociado a esta cuenta.",
+      };
+    }
+
+    if (userData.rol !== "gerente" && userData.rol !== "vendedor") {
+      await supabase.auth.signOut();
+      console.error("El perfil tiene un rol no permitido:", userData.rol);
+      return { ok: false, error: "El perfil tiene un rol inválido. Contacta al administrador." };
     }
 
     const u: Usuario = {
@@ -740,10 +867,43 @@ export async function dbLoginUsuario(
   }
 }
 
+export async function dbFetchUsuarioAutenticado(): Promise<Usuario | null> {
+  if (!supabase) return null;
+
+  const { data: authData, error: authError } = await supabase.auth.getUser();
+  if (authError) throw new Error(`No se pudo validar la sesión de Supabase: ${authError.message}`);
+  if (!authData.user) return null;
+
+  const { data, error } = await supabase
+    .from("usuarios")
+    .select("id, nombre, email, rol, sucursal_id, activo, password_temporal")
+    .eq("auth_id", authData.user.id)
+    .maybeSingle();
+
+  if (error) throw new Error(`No se pudo cargar el perfil autenticado: ${error.message}`);
+  if (!data || !data.activo) return null;
+  if (data.rol !== "gerente" && data.rol !== "vendedor") {
+    throw new Error(`Rol inválido en el perfil autenticado: ${data.rol}`);
+  }
+
+  return {
+    id: String(data.id),
+    nombre: data.nombre,
+    email: data.email,
+    password: "",
+    rol: data.rol,
+    sucursal: mapSucursalId(data.sucursal_id),
+    activo: Boolean(data.activo),
+    passwordTemporal: Boolean(data.password_temporal),
+  };
+}
+
 // 9. Cargar y Gestionar Usuarios
 export async function dbFetchUsuarios(): Promise<Usuario[]> {
   if (!supabase) return [];
-  const { data, error } = await supabase.from("usuarios").select("*");
+  const { data, error } = await supabase
+    .from("usuarios")
+    .select("id, nombre, email, rol, sucursal_id, activo, password_temporal");
   if (error) {
     console.error("Error cargando usuarios:", error);
     return [];
@@ -752,7 +912,7 @@ export async function dbFetchUsuarios(): Promise<Usuario[]> {
     id: String(row.id),
     nombre: row.nombre,
     email: row.email,
-    password: row.password_hash || "123456",
+    password: "",
     rol: row.rol,
     sucursal: mapSucursalId(row.sucursal_id),
     activo: Boolean(row.activo),
@@ -824,7 +984,6 @@ export async function dbCrearUsuario(
     sucursal_id: unmapSucursalId(u.sucursal),
     nombre: u.nombre.trim(),
     email: cleanEmail,
-    password_hash: u.password,
     rol: u.rol,
     activo: u.activo,
   };
@@ -865,11 +1024,6 @@ export async function dbActualizarUsuario(u: Usuario): Promise<boolean> {
     rol: u.rol,
     activo: u.activo,
   };
-  if (u.password) {
-    payload.password_hash = u.password;
-    payload.password_temporal = false;
-  }
-
   try {
     if (isNum) {
       const { error } = await supabase.from("usuarios").update(payload).eq("id", numId);
@@ -944,56 +1098,19 @@ export async function dbEliminarUsuario(id: string, email?: string): Promise<boo
 // 14. Solicitar recuperación de contraseña (envía enlace de Supabase Auth)
 export async function dbSolicitarRecuperacionPassword(
   email: string
-): Promise<{ ok: boolean; error?: string; usuario?: { id: string; nombre: string; email: string }; authResent?: boolean }> {
+): Promise<{ ok: boolean; error?: string; authResent?: boolean }> {
   if (!supabase) return { ok: false, error: "Base de datos Supabase no configurada." };
 
   const cleanEmail = email.trim().toLowerCase();
 
   try {
-    const { data: usuario, error: errBusqueda } = await supabase
-      .from("usuarios")
-      .select("id, nombre, email, activo")
-      .ilike("email", cleanEmail)
-      .maybeSingle();
-
-    if (errBusqueda) {
-      console.error("Error al buscar usuario para recuperación:", errBusqueda);
-      return { ok: false, error: "Error al consultar la base de datos." };
-    }
-
-    if (!usuario) {
-      return { ok: false, error: "No se encontró ningún empleado registrado con este correo electrónico." };
-    }
-
-    if (!usuario.activo) {
-      return { ok: false, error: "La cuenta de este empleado se encuentra inactiva. Contacta al gerente." };
-    }
-
-    // Omitir redirectTo usa el Site URL permitido configurado en Supabase Auth.
     const { error: resetError } = await supabase.auth.resetPasswordForEmail(cleanEmail);
     if (resetError) {
       console.error("Error de Supabase Auth al enviar recuperación:", resetError);
-      return {
-        ok: false,
-        error: resetError.message,
-        usuario: {
-          id: String(usuario.id),
-          nombre: usuario.nombre,
-          email: usuario.email,
-        },
-        authResent: false,
-      };
+      return { ok: false, error: resetError.message, authResent: false };
     }
 
-    return {
-      ok: true,
-      usuario: {
-        id: String(usuario.id),
-        nombre: usuario.nombre,
-        email: usuario.email,
-      },
-      authResent: true,
-    };
+    return { ok: true, authResent: true };
   } catch (err: any) {
     console.error("Excepción en dbSolicitarRecuperacionPassword:", err);
     return { ok: false, error: "Ocurrió un error inesperado al procesar la solicitud." };
@@ -1002,95 +1119,33 @@ export async function dbSolicitarRecuperacionPassword(
 
 // 15. Cambiar contraseña definitiva
 export async function dbCambiarPasswordUsuario(
-  id: string,
   nuevaPassword: string,
   email?: string
 ): Promise<{ ok: boolean; error?: string }> {
   if (!supabase) return { ok: false, error: "Base de datos Supabase no configurada." };
 
   const cleanPass = nuevaPassword.trim();
-  const numId = parseInt(id, 10);
-  const isNum = !isNaN(numId);
   const cleanEmail = email ? email.trim().toLowerCase() : "";
 
   try {
-    let authUserId: string | undefined;
-    try {
-      const { data: authSession } = await supabase.auth.getSession();
-      const authUserEmail = authSession?.session?.user?.email?.trim().toLowerCase();
-      if (authUserEmail && cleanEmail && authUserEmail === cleanEmail) {
-        authUserId = authSession.session?.user?.id;
-        const { error: authUpdateError } = await supabase.auth.updateUser({ password: cleanPass });
-        if (authUpdateError) {
-          return { ok: false, error: authUpdateError.message || "Supabase Auth no pudo actualizar la contraseña." };
-        }
-      }
-    } catch (e) {
-      console.error("No se pudo actualizar la contraseña en Supabase Auth:", e);
-      return { ok: false, error: "No se pudo validar la sesión de recuperación. Solicita un enlace nuevo." };
+    const { data, error: authError } = await supabase.auth.getUser();
+    const authenticatedEmail = data.user?.email?.trim().toLowerCase();
+    if (authError || !data.user || (cleanEmail && authenticatedEmail !== cleanEmail)) {
+      return { ok: false, error: "La sesión de recuperación expiró. Solicita un enlace nuevo." };
     }
 
-    // Vincular el perfil con Auth solo si la columna existe, pero no bloquear
-    // el flujo si el usuario ya existe en Auth y el registro del perfil está incompleto.
-    const passwordUpdate: Record<string, unknown> = {
-      password_hash: cleanPass,
-      password_temporal: false,
-    };
-    const payloadVariants: Record<string, unknown>[] = [
-      { ...passwordUpdate, ...(authUserId ? { auth_id: authUserId } : {}) },
-      { ...passwordUpdate },
-    ];
-    let actualizado = false;
-
-    const tryProfileUpdate = async (mode: "id" | "email") => {
-      const isIdMode = mode === "id";
-
-      for (const payload of payloadVariants) {
-        const res = await (isIdMode
-          ? supabase.from("usuarios").update(payload).eq("id", numId).select("id").maybeSingle()
-          : supabase.from("usuarios").update(payload).ilike("email", cleanEmail).select("id").maybeSingle());
-
-        if (!res.error && res.data) {
-          return true;
-        }
-
-        const fallbackRes = await (isIdMode
-          ? supabase
-              .from("usuarios")
-              .upsert({ id: numId, ...(cleanEmail ? { email: cleanEmail } : {}), ...payload }, { onConflict: "id" })
-              .select("id")
-              .maybeSingle()
-          : supabase
-              .from("usuarios")
-              .upsert({ ...(cleanEmail ? { email: cleanEmail } : {}), ...payload }, { onConflict: "email" })
-              .select("id")
-              .maybeSingle());
-
-        if (!fallbackRes.error && fallbackRes.data) {
-          return true;
-        }
-
-        if (fallbackRes.error) {
-          console.error(`Error al actualizar perfil por ${mode} con payload:`, fallbackRes.error);
-        }
-      }
-
-      return false;
-    };
-
-    if (isNum) {
-      actualizado = await tryProfileUpdate("id");
+    const { error: passwordError } = await supabase.auth.updateUser({ password: cleanPass });
+    if (passwordError) {
+      return { ok: false, error: passwordError.message || "Supabase Auth no pudo actualizar la contraseña." };
     }
 
-    if (!actualizado && cleanEmail) {
-      actualizado = await tryProfileUpdate("email");
-    }
-
-    if (!actualizado) {
-      const errorDetails =
-        "Supabase Auth actualizó la contraseña, pero no se pudo actualizar el perfil del usuario. " +
-        "Revisa que exista el registro del usuario y que la tabla usuarios tenga las columnas requeridas.";
-      return { ok: false, error: errorDetails };
+    const { error: profileError } = await supabase.rpc("genesis_clear_own_temporary_password");
+    if (profileError) {
+      console.error("La contraseña se actualizó, pero no se pudo cerrar el estado temporal:", profileError);
+      return {
+        ok: false,
+        error: "La contraseña se actualizó, pero no se pudo actualizar el perfil. Contacta al administrador.",
+      };
     }
 
     return { ok: true };
@@ -1131,10 +1186,6 @@ export async function dbSembrarDatosIniciales(): Promise<{ ok: boolean; message:
       { id: 5, razon_social: "ElectroCar SA", rfc_nit: "ECA160520EE5", telefono: "555-5555", email: "ventas@electrocar.com" },
       { id: 6, razon_social: "Rendimiento Total", rfc_nit: "RTO210202FF6", telefono: "555-6666", email: "info@rendimientototal.com" },
       { id: 7, razon_social: "Distribuidora VW MX", rfc_nit: "DVW150910GG7", telefono: "555-7777", email: "ventas@vwmx.com" },
-    ]);
-
-    await supabase.from("usuarios").upsert([
-      { id: 1, sucursal_id: 1, nombre: "Ever leonel", email: "gerente@taller.com", password_hash: "gerente123", rol: "gerente", activo: true },
     ]);
 
     await supabase.from("repuestos").upsert([

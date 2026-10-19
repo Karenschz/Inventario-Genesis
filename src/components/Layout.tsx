@@ -5,7 +5,7 @@ import ModalConfigWhatsApp from "./ModalConfigWhatsApp";
 
 
 type NavItem = {
-  id: "dashboard" | "inventario" | "movimientos" | "herramientas" | "reportes" | "usuarios";
+  id: "dashboard" | "inventario" | "movimientos" | "herramientas" | "reportes" | "usuarios" | "respaldo" | "ayuda";
   label: string;
   icon: React.ReactNode;
   soloGerente?: boolean;
@@ -69,6 +69,16 @@ const navItems: NavItem[] = [
     ),
     soloGerente: true,
   },
+  {
+    id: "respaldo",
+    label: "Respaldo",
+    icon: (
+      <svg viewBox="0 0 20 20" fill="currentColor" className="w-4.5 h-4.5">
+        <path fillRule="evenodd" d="M3 3.75A1.75 1.75 0 0 1 4.75 2h10.5A1.75 1.75 0 0 1 17 3.75v12.5A1.75 1.75 0 0 1 15.25 18H4.75A1.75 1.75 0 0 1 3 16.25V3.75Zm3.75 1.5a.75.75 0 0 0 0 1.5h6.5a.75.75 0 0 0 0-1.5h-6.5Zm0 4a.75.75 0 0 0 0 1.5h6.5a.75.75 0 0 0 0-1.5h-6.5Zm0 4a.75.75 0 0 0 0 1.5h3.5a.75.75 0 0 0 0-1.5h-3.5Z" clipRule="evenodd" />
+      </svg>
+    ),
+    soloGerente: true,
+  },
 ];
 
 export default function Layout({ children }: { children: React.ReactNode }) {
@@ -92,8 +102,6 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 
   const whatsappListo = Boolean(
     whatsAppConfig?.activo &&
-    whatsAppConfig?.instanceId &&
-    whatsAppConfig?.token &&
     whatsAppConfig?.destinatario
   );
 
@@ -292,6 +300,23 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               </button>
             );
           })}
+          <div className={esGerente ? "" : "pt-2 mt-2 border-t border-[var(--border)]"}>
+            <button
+              onClick={() => handleSeleccionarVista("ayuda")}
+              title="Centro de ayuda"
+              aria-label="Abrir centro de ayuda"
+              className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-md text-sm font-medium transition-colors relative ${
+                vistaActual === "ayuda"
+                  ? "bg-[var(--primary)] text-[var(--primary-foreground)]"
+                  : "text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:bg-[var(--secondary)]"
+              } ${!sidebarOpen ? "md:justify-center" : ""}`}
+            >
+              <svg viewBox="0 0 20 20" fill="currentColor" className="w-4.5 h-4.5 shrink-0">
+                <path fillRule="evenodd" d="M10 2a8 8 0 1 0 0 16 8 8 0 0 0 0-16Zm0 12.75a.875.875 0 1 0 0-1.75.875.875 0 0 0 0 1.75Zm0-9a3 3 0 0 0-2.997 2.85.75.75 0 0 0 1.499.075 1.5 1.5 0 1 1 1.748 1.485.75.75 0 0 0-.625.74v.35a.75.75 0 0 0 1.5 0v-.05A3 3 0 0 0 10 5.75Z" clipRule="evenodd" />
+              </svg>
+              <span className={`truncate ${!sidebarOpen ? "md:hidden" : ""}`}>Ayuda</span>
+            </button>
+          </div>
         </nav>
 
         {/* Perfil / WhatsApp / Alternar Tema / Cierre de Sesión */}

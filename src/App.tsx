@@ -9,6 +9,8 @@ import Movimientos from "./components/Movimientos";
 import Herramientas from "./components/Herramientas";
 import Reportes from "./components/Reportes";
 import Usuarios from "./components/Usuarios";
+import Ayuda from "./components/Ayuda";
+import Respaldo from "./components/Respaldo";
 
 class ErrorBoundary extends React.Component<
   { children: React.ReactNode },
@@ -74,6 +76,8 @@ function AppContent() {
     herramientas: <Herramientas />,
     reportes: <Reportes />,
     usuarios: <Usuarios />,
+    respaldo: <Respaldo />,
+    ayuda: <Ayuda />,
   };
 
   return (

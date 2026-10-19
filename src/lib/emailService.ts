@@ -13,26 +13,56 @@ export const DEFAULT_EMAIL_CONFIG: EmailConfig = {
   webhookUrl: "",
 };
 
+function limpiarConfig(config: Partial<EmailConfig>): EmailConfig {
+  return {
+    activo: Boolean(config.activo),
+    proveedor:
+      config.proveedor === "resend" ||
+      config.proveedor === "emailjs" ||
+      config.proveedor === "webhook"
+        ? config.proveedor
+        : "simulado",
+    resendApiKey: "",
+    resendFromEmail: config.resendFromEmail || DEFAULT_EMAIL_CONFIG.resendFromEmail,
+    emailjsServiceId: config.emailjsServiceId || "",
+    emailjsTemplateId: config.emailjsTemplateId || "",
+    emailjsPublicKey: config.emailjsPublicKey || "",
+    webhookUrl: "",
+  };
+}
+
 export function getEmailConfig(): EmailConfig {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return DEFAULT_EMAIL_CONFIG;
-    const parsed = JSON.parse(raw);
-    return {
-      ...DEFAULT_EMAIL_CONFIG,
-      ...parsed,
-    };
+    const config = limpiarConfig(JSON.parse(raw));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
+    return config;
   } catch (error) {
     console.error("Error al leer configuración de correo:", error);
     return DEFAULT_EMAIL_CONFIG;
   }
 }
 
+export function limpiarCredencialesCorreoDelNavegador(): void {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(limpiarConfig(JSON.parse(raw))));
+    }
+  } catch (error) {
+    console.error("No se pudieron limpiar las credenciales de correo del navegador:", error);
+  }
+}
+
 export function saveEmailConfig(config: EmailConfig): void {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
+    const safeConfig = limpiarConfig(config);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(safeConfig));
     if (typeof window !== "undefined") {
-      window.dispatchEvent(new CustomEvent("genesis_email_config_changed", { detail: config }));
+      window.dispatchEvent(
+        new CustomEvent("genesis_email_config_changed", { detail: safeConfig })
+      );
     }
   } catch (error) {
     console.error("Error al guardar configuración de correo:", error);
@@ -45,7 +75,7 @@ export async function enviarCorreoRecuperacion(
   passwordTemporal: string,
   configOverride?: Partial<EmailConfig>
 ): Promise<PasswordRecoveryResult> {
-  const config = { ...getEmailConfig(), ...configOverride };
+  const config = limpiarConfig({ ...getEmailConfig(), ...configOverride });
   const usuario = destinatario.trim();
 
   if (!usuario) {
@@ -60,89 +90,28 @@ export async function enviarCorreoRecuperacion(
     };
   }
 
-  const cuerpoHtml = `
-    <div style="font-family: Arial, sans-serif; color: #0f172a; line-height: 1.6;">
-      <h2 style="margin: 0 0 12px;">Recuperación de contraseña</h2>
-      <p>Hola <strong>${nombreUsuario}</strong>,</p>
-      <p>Tu contraseña temporal es:</p>
-      <p style="font-size: 24px; font-weight: 700; letter-spacing: 1px; margin: 16px 0;">${passwordTemporal}</p>
-      <p>Se te pedirá cambiarla al iniciar sesión.</p>
-    </div>
-  `;
-
-  if (config.proveedor === "resend") {
-    if (!config.resendApiKey?.trim()) {
-      return {
-        ok: false,
-        error: "Falta la API key de Resend.",
-        emailEnviado: false,
-        passwordTemporal,
-        proveedor: "resend",
-        destinatario: usuario,
-        mensaje: "No se pudo enviar el correo porque Resend no está configurado.",
-      };
-    }
-
-    try {
-      const response = await fetch("https://api.resend.com/emails", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${config.resendApiKey.trim()}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          from: config.resendFromEmail || "Genesis Taller <onboarding@resend.dev>",
-          to: [usuario],
-          subject: "Recuperación de contraseña - Sistema Genesis",
-          html: cuerpoHtml,
-        }),
-      });
-
-      const data = await response.json().catch(() => null);
-      if (!response.ok) {
-        const message = data?.message || `HTTP ${response.status}`;
-        return {
-          ok: false,
-          error: `Error al enviar con Resend: ${message}`,
-          emailEnviado: false,
-          passwordTemporal,
-          proveedor: "resend",
-          destinatario: usuario,
-          mensaje: `No se pudo enviar el correo a ${usuario} vía Resend.`,
-        };
-      }
-
-      return {
-        ok: true,
-        emailEnviado: true,
-        passwordTemporal,
-        proveedor: "resend",
-        destinatario: usuario,
-        mensaje: `Correo enviado exitosamente a ${usuario} vía Resend.`,
-      };
-    } catch (error: any) {
-      return {
-        ok: false,
-        error: `Fallo al llamar a Resend: ${error?.message || "Desconocido"}`,
-        emailEnviado: false,
-        passwordTemporal,
-        proveedor: "resend",
-        destinatario: usuario,
-        mensaje: "Hubo un problema al enviar el correo con Resend.",
-      };
-    }
+  if (config.proveedor === "resend" || config.proveedor === "webhook") {
+    return {
+      ok: false,
+      error: `${config.proveedor} debe configurarse en un servicio seguro del servidor.`,
+      emailEnviado: false,
+      passwordTemporal,
+      proveedor: config.proveedor,
+      destinatario: usuario,
+      mensaje: "No se enviaron credenciales privadas desde el navegador.",
+    };
   }
 
   if (config.proveedor === "emailjs") {
-    if (!config.emailjsServiceId?.trim() || !config.emailjsTemplateId?.trim() || !config.emailjsPublicKey?.trim()) {
+    if (!config.emailjsServiceId || !config.emailjsTemplateId || !config.emailjsPublicKey) {
       return {
         ok: false,
-        error: "Faltan credenciales de EmailJS.",
+        error: "Faltan credenciales públicas de EmailJS.",
         emailEnviado: false,
         passwordTemporal,
         proveedor: "emailjs",
         destinatario: usuario,
-        mensaje: "EmailJS no está configurado para enviar correos reales.",
+        mensaje: "EmailJS no está configurado para enviar correos.",
       };
     }
 
@@ -160,95 +129,34 @@ export async function enviarCorreoRecuperacion(
         config.emailjsPublicKey.trim()
       );
 
-      if (response?.status === 200) {
-        return {
-          ok: true,
-          emailEnviado: true,
-          passwordTemporal,
-          proveedor: "emailjs",
-          destinatario: usuario,
-          mensaje: `Correo enviado exitosamente a ${usuario} vía EmailJS.`,
-        };
-      }
-
+      return response?.status === 200
+        ? {
+            ok: true,
+            emailEnviado: true,
+            passwordTemporal,
+            proveedor: "emailjs",
+            destinatario: usuario,
+            mensaje: `Correo enviado exitosamente a ${usuario} vía EmailJS.`,
+          }
+        : {
+            ok: false,
+            error: "EmailJS respondió con un estado inesperado.",
+            emailEnviado: false,
+            passwordTemporal,
+            proveedor: "emailjs",
+            destinatario: usuario,
+            mensaje: "No se pudo confirmar el envío por EmailJS.",
+          };
+    } catch (error) {
+      console.error("Fallo al enviar correo con EmailJS:", error);
       return {
         ok: false,
-        error: "EmailJS respondió con un estado inesperado.",
-        emailEnviado: false,
-        passwordTemporal,
-        proveedor: "emailjs",
-        destinatario: usuario,
-        mensaje: "No se pudo confirmar el envío por EmailJS.",
-      };
-    } catch (error: any) {
-      return {
-        ok: false,
-        error: `Fallo al llamar a EmailJS: ${error?.message || "Desconocido"}`,
+        error: "No se pudo enviar el correo por EmailJS.",
         emailEnviado: false,
         passwordTemporal,
         proveedor: "emailjs",
         destinatario: usuario,
         mensaje: "No se pudo enviar el correo vía EmailJS.",
-      };
-    }
-  }
-
-  if (config.proveedor === "webhook") {
-    if (!config.webhookUrl?.trim()) {
-      return {
-        ok: false,
-        error: "Falta la URL del webhook.",
-        emailEnviado: false,
-        passwordTemporal,
-        proveedor: "webhook",
-        destinatario: usuario,
-        mensaje: "La configuración del webhook está incompleta.",
-      };
-    }
-
-    try {
-      const response = await fetch(config.webhookUrl.trim(), {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          destinatario: usuario,
-          nombreUsuario,
-          passwordTemporal,
-          asunto: "Recuperación de contraseña",
-        }),
-      });
-
-      if (!response.ok) {
-        return {
-          ok: false,
-          error: `Fallo al llamar al webhook: HTTP ${response.status}`,
-          emailEnviado: false,
-          passwordTemporal,
-          proveedor: "webhook",
-          destinatario: usuario,
-          mensaje: "El webhook respondió con un error.",
-        };
-      }
-
-      return {
-        ok: true,
-        emailEnviado: true,
-        passwordTemporal,
-        proveedor: "webhook",
-        destinatario: usuario,
-        mensaje: `Correo enviado exitosamente a ${usuario} vía webhook.`,
-      };
-    } catch (error: any) {
-      return {
-        ok: false,
-        error: `Fallo al llamar al webhook: ${error?.message || "Desconocido"}`,
-        emailEnviado: false,
-        passwordTemporal,
-        proveedor: "webhook",
-        destinatario: usuario,
-        mensaje: "No se pudo contactar al webhook configurado.",
       };
     }
   }
@@ -259,6 +167,6 @@ export async function enviarCorreoRecuperacion(
     passwordTemporal,
     proveedor: "simulado",
     destinatario: usuario,
-    mensaje: `Contraseña temporal generada para ${usuario}. (Modo Simulado: puedes configurar Resend o EmailJS para entrega real a buzón).`,
+    mensaje: `Contraseña temporal generada para ${usuario}. Modo simulado; no se envió un correo.`,
   };
 }
