@@ -62,7 +62,13 @@ function ModalRepuesto({
   esGerente: boolean;
   repuestosExistentes?: Repuesto[];
 }) {
-  const [form, setForm] = useState(repuesto);
+  const [form, setForm] = useState({
+    ...repuesto,
+    existencia: String(repuesto.existencia),
+    stockMinimo: String(repuesto.stockMinimo),
+    precioCompra: String(repuesto.precioCompra),
+    precioVenta: String(repuesto.precioVenta),
+  });
   const set = (k: string, v: string | number) => setForm((p) => ({ ...p, [k]: v }));
 
   const handleCategoriaChange = (nuevaCat: CategoriaRepuesto) => {
@@ -171,7 +177,7 @@ function ModalRepuesto({
                 type="number"
                 min="0"
                 value={form.existencia}
-                onChange={(e) => set("existencia", Math.max(0, +e.target.value))}
+                onChange={(e) => set("existencia", e.target.value)}
                 className="input-field font-mono-data"
               />
             </div>
@@ -183,7 +189,7 @@ function ModalRepuesto({
                 type="number"
                 min="0"
                 value={form.stockMinimo}
-                onChange={(e) => set("stockMinimo", Math.max(0, +e.target.value))}
+                onChange={(e) => set("stockMinimo", e.target.value)}
                 className="input-field font-mono-data"
               />
             </div>
@@ -197,7 +203,7 @@ function ModalRepuesto({
                   min="0"
                   step="0.01"
                   value={form.precioCompra}
-                  onChange={(e) => set("precioCompra", Math.max(0, +e.target.value))}
+                  onChange={(e) => set("precioCompra", e.target.value)}
                   className="input-field font-mono-data"
                 />
               </div>
@@ -211,7 +217,7 @@ function ModalRepuesto({
                 min="0"
                 step="0.01"
                 value={form.precioVenta}
-                onChange={(e) => set("precioVenta", Math.max(0, +e.target.value))}
+                onChange={(e) => set("precioVenta", e.target.value)}
                 className="input-field font-mono-data"
               />
             </div>
@@ -256,7 +262,15 @@ function ModalRepuesto({
           </button>
           <button
             onClick={() => {
-              if (form.nombre && form.codigo) onSave(form);
+              if (form.nombre && form.codigo) {
+                onSave({
+                  ...form,
+                  existencia: Math.max(0, Number(form.existencia) || 0),
+                  stockMinimo: Math.max(0, Number(form.stockMinimo) || 0),
+                  precioCompra: Math.max(0, Number(form.precioCompra) || 0),
+                  precioVenta: Math.max(0, Number(form.precioVenta) || 0),
+                });
+              }
             }}
             className="btn-primary"
           >
@@ -288,7 +302,7 @@ function ModalMovimiento({
   }) => { ok: boolean; error?: string } | Promise<{ ok: boolean; error?: string }>;
 }) {
   const [tipo, setTipo] = useState<TipoMovimiento>(tipoInicial);
-  const [cantidad, setCantidad] = useState<number>(1);
+  const [cantidad, setCantidad] = useState("1");
   const motivosDisponibles = tipo === "salida" ? MOTIVOS_SALIDA : MOTIVOS_ENTRADA;
   const [motivo, setMotivo] = useState<string>(motivosDisponibles[0]);
   const [folio, setFolio] = useState<string>("");
@@ -302,11 +316,12 @@ function ModalMovimiento({
   };
 
   const handleGuardar = async () => {
-    if (cantidad <= 0) {
+    const cantidadNumero = Number(cantidad);
+    if (!Number.isInteger(cantidadNumero) || cantidadNumero <= 0) {
       setError("La cantidad debe ser mayor a 0");
       return;
     }
-    if (tipo === "salida" && cantidad > repuesto.existencia) {
+    if (tipo === "salida" && cantidadNumero > repuesto.existencia) {
       setError(`Stock insuficiente. Solo hay ${repuesto.existencia} unidades disponibles.`);
       return;
     }
@@ -314,7 +329,7 @@ function ModalMovimiento({
     const res = await onConfirm({
       repuestoId: repuesto.id,
       tipo,
-      cantidad,
+      cantidad: cantidadNumero,
       motivo,
       folioReferencia: folio,
       notas,
@@ -330,8 +345,8 @@ function ModalMovimiento({
 
   const stockProyectado =
     tipo === "entrada"
-      ? repuesto.existencia + (cantidad || 0)
-      : repuesto.existencia - (cantidad || 0);
+      ? repuesto.existencia + (Number(cantidad) || 0)
+      : repuesto.existencia - (Number(cantidad) || 0);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
@@ -427,7 +442,7 @@ function ModalMovimiento({
                 max={tipo === "salida" ? repuesto.existencia : undefined}
                 value={cantidad}
                 onChange={(e) => {
-                  setCantidad(Math.max(1, parseInt(e.target.value) || 0));
+                  setCantidad(e.target.value);
                   setError(null);
                 }}
                 className="input-field font-mono-data text-lg font-bold text-center flex-1"
@@ -438,7 +453,7 @@ function ModalMovimiento({
                     key={n}
                     type="button"
                     onClick={() => {
-                      setCantidad((prev) => prev + n);
+                      setCantidad((prev) => String((Number(prev) || 0) + n));
                       setError(null);
                     }}
                     className="px-2.5 py-1 text-xs font-semibold bg-[var(--secondary)] hover:bg-[var(--border)] rounded-md text-[var(--foreground)] transition-colors"

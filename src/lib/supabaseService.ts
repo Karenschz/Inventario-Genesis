@@ -9,12 +9,6 @@ import type {
   CategoriaRepuesto,
   TipoMovimiento,
 } from "../types";
-import {
-  usuariosIniciales,
-  repuestosIniciales,
-  herramientasIniciales,
-  movimientosIniciales,
-} from "../data";
 
 // Conversión de IDs de sucursal Supabase (1, 2) a tipos de frontend ("sucursal1", "sucursal2")
 export function mapSucursalId(id: number | string): Sucursal {
@@ -821,7 +815,17 @@ export async function dbLoginUsuario(
     });
 
     if (authError || !authData.user) {
-      return { ok: false, error: "Credenciales incorrectas o usuario inactivo." };
+      if (authError?.code === "invalid_credentials") {
+        return { ok: false, error: "El correo o la contraseña no son correctos." };
+      }
+      if (authError?.code === "email_not_confirmed") {
+        return { ok: false, error: "El correo de esta cuenta aún no está confirmado." };
+      }
+      if (authError) {
+        console.error("Error de Supabase Auth al iniciar sesión:", authError);
+        return { ok: false, error: "No se pudo validar el inicio de sesión. Revisa tu conexión e inténtalo de nuevo." };
+      }
+      return { ok: false, error: "No se pudo validar la cuenta. Inténtalo de nuevo." };
     }
 
     const { data: userData, error: profileError } = await supabase
@@ -1127,7 +1131,7 @@ export async function dbCambiarPasswordUsuario(
 ): Promise<{ ok: boolean; error?: string }> {
   if (!supabase) return { ok: false, error: "Base de datos Supabase no configurada." };
 
-  const cleanPass = nuevaPassword.trim();
+  const cleanPass = nuevaPassword;
   const cleanEmail = email ? email.trim().toLowerCase() : "";
 
   try {
@@ -1158,83 +1162,11 @@ export async function dbCambiarPasswordUsuario(
   }
 }
 
-// 16. Inicializar / Poblar Base de Datos Completa
+// Se conserva la API para llamadas existentes, pero no se deben reinsertar
+// registros de demostración sobre una base de datos real.
 export async function dbSembrarDatosIniciales(): Promise<{ ok: boolean; message: string }> {
-  if (!supabase) return { ok: false, message: "Supabase no está configurado." };
-
-  try {
-    await supabase.from("sucursales").upsert([
-      { id: 1, nombre: "Sucursal Norte - Principal", direccion: "Av. Principal 123, Col. Centro", telefono: "555-0101", activo: true },
-      { id: 2, nombre: "Sucursal Sur - Express", direccion: "Blvd. Sur 456, Col. Industrial", telefono: "555-0202", activo: true },
-    ]);
-
-    await supabase.from("categorias_repuestos").upsert([
-      { id: 1, nombre: "Filtros", descripcion: "Filtros de aceite, aire, gasolina y cabina" },
-      { id: 2, nombre: "Frenos", descripcion: "Pastillas, discos, tambores y líquido de frenos" },
-      { id: 3, nombre: "Lubricantes", descripcion: "Aceites de motor, transmisión y diferenciales" },
-      { id: 4, nombre: "Suspensión", descripcion: "Amortiguadores, resortes, rótulas y terminales" },
-      { id: 5, nombre: "Eléctrico", descripcion: "Baterías, alternadores, marchas y sensores" },
-      { id: 6, nombre: "Motor", descripcion: "Bujías, bandas, empaques y pistones" },
-      { id: 7, nombre: "Transmisión", descripcion: "Embragues, bandas y engranes" },
-      { id: 8, nombre: "Carrocería", descripcion: "Espejos, fascias y manijas" },
-      { id: 9, nombre: "Neumáticos", descripcion: "Llantas, válvulas y rines" },
-      { id: 10, nombre: "Otro", descripcion: "Otros repuestos y accesorios" },
-    ]);
-
-    await supabase.from("proveedores").upsert([
-      { id: 1, razon_social: "Distribuidora Toyota MX", rfc_nit: "DTM200101AA1", telefono: "555-1111", email: "ventas@toyotamx.com" },
-      { id: 2, razon_social: "AutoPartes Norte", rfc_nit: "APN190315BB2", telefono: "555-2222", email: "contacto@autopartesnorte.com" },
-      { id: 3, razon_social: "Lubricantes MX", rfc_nit: "LMX180808CC3", telefono: "555-3333", email: "pedidos@lubricantesmx.com" },
-      { id: 4, razon_social: "Refacciones Premium", rfc_nit: "RPR170601DD4", telefono: "555-4444", email: "info@refaccionespremium.com" },
-      { id: 5, razon_social: "ElectroCar SA", rfc_nit: "ECA160520EE5", telefono: "555-5555", email: "ventas@electrocar.com" },
-      { id: 6, razon_social: "Rendimiento Total", rfc_nit: "RTO210202FF6", telefono: "555-6666", email: "info@rendimientototal.com" },
-      { id: 7, razon_social: "Distribuidora VW MX", rfc_nit: "DVW150910GG7", telefono: "555-7777", email: "ventas@vwmx.com" },
-    ]);
-
-    await supabase.from("repuestos").upsert([
-      { id: 1, categoria_id: 1, proveedor_id: 1, codigo_parte: "FAC-001", nombre: "Filtro de aceite Toyota Corolla", marca: "Toyota" },
-      { id: 2, categoria_id: 2, proveedor_id: 2, codigo_parte: "PFD-012", nombre: "Pastillas de freno delanteras Nissan", marca: "Brembo" },
-      { id: 3, categoria_id: 3, proveedor_id: 3, codigo_parte: "ACM-030", nombre: "Aceite motor 5W-30 sintético 1L", marca: "Mobil 1" },
-      { id: 4, categoria_id: 4, proveedor_id: 4, codigo_parte: "AMD-024", nombre: "Amortiguador delantero Honda Civic", marca: "Monroe" },
-      { id: 5, categoria_id: 5, proveedor_id: 5, codigo_parte: "BAT-060", nombre: "Batería 12V 60Ah", marca: "Optima" },
-      { id: 6, categoria_id: 6, proveedor_id: 2, codigo_parte: "BUJ-NGK", nombre: "Bujías NGK Platino x4", marca: "NGK" },
-      { id: 7, categoria_id: 1, proveedor_id: 6, codigo_parte: "FAI-KN1", nombre: "Filtro de aire KN High Flow", marca: "K&N" },
-      { id: 8, categoria_id: 5, proveedor_id: 5, codigo_parte: "CBU-UNI", nombre: "Cable de bujía universal", marca: "Bosch" },
-      { id: 9, categoria_id: 1, proveedor_id: 7, codigo_parte: "FAC-VW1", nombre: "Filtro de aceite Volkswagen", marca: "Mann" },
-      { id: 10, categoria_id: 2, proveedor_id: 2, codigo_parte: "LDF-DOT4", nombre: "Líquido de frenos DOT4 500ml", marca: "Motul" },
-      { id: 11, categoria_id: 4, proveedor_id: 4, codigo_parte: "ROT-DEL", nombre: "Rótula delantera inferior", marca: "Moog" },
-      { id: 12, categoria_id: 5, proveedor_id: 5, codigo_parte: "ALT-UNI", nombre: "Alternador 12V 90A", marca: "Denso" },
-    ]);
-
-    await supabase.from("inventario_repuestos").upsert([
-      { id: 1, sucursal_id: 1, repuesto_id: 1, existencia: 24, stock_minimo: 10, precio_compra: 85, precio_venta: 140, ubicacion_fisica: "A1-E2", ultima_compra: "2026-07-15" },
-      { id: 2, sucursal_id: 1, repuesto_id: 2, existencia: 4, stock_minimo: 6, precio_compra: 320, precio_venta: 550, ubicacion_fisica: "B2-E1", ultima_compra: "2026-06-20" },
-      { id: 3, sucursal_id: 1, repuesto_id: 3, existencia: 48, stock_minimo: 20, precio_compra: 95, precio_venta: 165, ubicacion_fisica: "C1-E3", ultima_compra: "2026-08-01" },
-      { id: 4, sucursal_id: 1, repuesto_id: 4, existencia: 2, stock_minimo: 4, precio_compra: 780, precio_venta: 1350, ubicacion_fisica: "D3-E1", ultima_compra: "2026-05-10" },
-      { id: 5, sucursal_id: 1, repuesto_id: 5, existencia: 8, stock_minimo: 5, precio_compra: 1200, precio_venta: 1950, ubicacion_fisica: "E1-E2", ultima_compra: "2026-07-28" },
-      { id: 6, sucursal_id: 1, repuesto_id: 6, existencia: 0, stock_minimo: 8, precio_compra: 210, precio_venta: 380, ubicacion_fisica: "A2-E1", ultima_compra: "2026-04-15" },
-      { id: 7, sucursal_id: 1, repuesto_id: 7, existencia: 6, stock_minimo: 4, precio_compra: 450, precio_venta: 780, ubicacion_fisica: "A1-E3", ultima_compra: "2026-08-10" },
-      { id: 8, sucursal_id: 1, repuesto_id: 8, existencia: 11, stock_minimo: 5, precio_compra: 180, precio_venta: 320, ubicacion_fisica: "E2-E1", ultima_compra: "2026-06-05" },
-      { id: 9, sucursal_id: 2, repuesto_id: 9, existencia: 15, stock_minimo: 8, precio_compra: 90, precio_venta: 155, ubicacion_fisica: "A1-E1", ultima_compra: "2026-07-20" },
-      { id: 10, sucursal_id: 2, repuesto_id: 10, existencia: 22, stock_minimo: 10, precio_compra: 65, precio_venta: 110, ubicacion_fisica: "B1-E2", ultima_compra: "2026-08-05" },
-      { id: 11, sucursal_id: 2, repuesto_id: 11, existencia: 3, stock_minimo: 5, precio_compra: 290, precio_venta: 490, ubicacion_fisica: "D1-E1", ultima_compra: "2026-06-12" },
-      { id: 12, sucursal_id: 2, repuesto_id: 12, existencia: 1, stock_minimo: 2, precio_compra: 1450, precio_venta: 2400, ubicacion_fisica: "E1-E1", ultima_compra: "2026-03-30" },
-    ]);
-
-    await supabase.from("herramientas").upsert([
-      { id: 1, sucursal_id: 1, codigo_unico: "HR-001", nombre: "Escáner Automotriz OBD2", categoria: "Diagnóstico", estado: "disponible", notas: "Actualizado a software 2026" },
-      { id: 2, sucursal_id: 1, codigo_unico: "HR-002", nombre: "Pistola de impacto neumática 1/2\"", categoria: "Neumática", estado: "en_uso", notas: "Asignada a bahía 2" },
-      { id: 3, sucursal_id: 1, codigo_unico: "HR-003", nombre: "Gato hidráulico de patín 3 Ton", categoria: "Elevación", estado: "disponible" },
-      { id: 4, sucursal_id: 1, codigo_unico: "HR-004", nombre: "Juego de llaves combinadas 8-24mm", categoria: "Manual", estado: "disponible" },
-      { id: 5, sucursal_id: 1, codigo_unico: "HR-005", nombre: "Compresor de resortes de amortiguador", categoria: "Especial", estado: "mantenimiento", notas: "En revisión de rosca" },
-      { id: 6, sucursal_id: 2, codigo_unico: "HR-006", nombre: "Escáner Multimarca Pro", categoria: "Diagnóstico", estado: "disponible" },
-      { id: 7, sucursal_id: 2, codigo_unico: "HR-007", nombre: "Torquímetro 1/2\" 20-150 ft-lb", categoria: "Medición", estado: "disponible", notas: "Calibrado julio 2026" },
-      { id: 8, sucursal_id: 2, codigo_unico: "HR-008", nombre: "Rampa hidráulica de 2 postes", categoria: "Elevación", estado: "en_uso", notas: "Bahía 1" },
-    ]);
-
-    return { ok: true, message: "Datos iniciales sembrados con éxito en Supabase." };
-  } catch (err: any) {
-    console.error("Error al sembrar datos iniciales:", err);
-    return { ok: false, message: err?.message || "Error al poblar la base de datos." };
-  }
+  return {
+    ok: false,
+    message: "La carga de datos de demostración está deshabilitada para proteger los registros reales.",
+  };
 }

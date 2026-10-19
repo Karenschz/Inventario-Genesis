@@ -170,9 +170,9 @@ const AppContext = createContext<AppState | null>(null);
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const [usuarioActual, setUsuarioActual] = useState<Usuario | null>(null);
   const [usuarios, setUsuarios] = useState<Usuario[]>(usuariosIniciales);
-  const [repuestos, setRepuestos] = useState<Repuesto[]>(repuestosIniciales);
-  const [herramientas, setHerramientas] = useState<Herramienta[]>(herramientasIniciales);
-  const [movimientos, setMovimientos] = useState<MovimientoInventario[]>(movimientosIniciales);
+  const [repuestos, setRepuestos] = useState<Repuesto[]>(isSupabaseConfigured ? [] : repuestosIniciales);
+  const [herramientas, setHerramientas] = useState<Herramienta[]>(isSupabaseConfigured ? [] : herramientasIniciales);
+  const [movimientos, setMovimientos] = useState<MovimientoInventario[]>(isSupabaseConfigured ? [] : movimientosIniciales);
   const [vistaActual, setVistaActual] = useState<View>("dashboard");
   const [tema, setTema] = useState<"oscuro" | "claro">(() => {
     try {
@@ -324,12 +324,78 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       }
 
       const pending = await loadOfflineChanges(requestedUserId);
-      if (pending.length === 0) {
-        setRepuestos(dbReps.value);
-        if (dbMovs.status === "fulfilled") setMovimientos(dbMovs.value);
-        if (dbHerrs.status === "fulfilled") setHerramientas(dbHerrs.value);
-        setRespaldoListoParaUsuario(requestedUserId);
+      const projectedRepuestos = [...dbReps.value];
+      const projectedHerramientas = dbHerrs.status === "fulfilled" ? [...dbHerrs.value] : [];
+      const projectedMovimientos = dbMovs.status === "fulfilled" ? [...dbMovs.value] : [];
+      const projectedStock = new Map(projectedRepuestos.map((repuesto) => [repuesto.id, repuesto.existencia]));
+      for (const change of pending) {
+        switch (change.type) {
+          case "create-part":
+            projectedRepuestos.unshift({ ...change.value.part, id: change.value.localId });
+            projectedStock.set(change.value.localId, change.value.part.existencia);
+            break;
+          case "update-part": {
+            const index = projectedRepuestos.findIndex((item) => item.id === change.value.id);
+            if (index >= 0) projectedRepuestos[index] = change.value;
+            projectedStock.set(change.value.id, change.value.existencia);
+            break;
+          }
+          case "delete-part":
+            for (let index = projectedRepuestos.length - 1; index >= 0; index--) {
+              if (projectedRepuestos[index].id === change.value.id) projectedRepuestos.splice(index, 1);
+            }
+            projectedStock.delete(change.value.id);
+            break;
+          case "movement": {
+            const repuesto = projectedRepuestos.find((item) => item.id === change.value.repuestoId);
+            const stockAnterior = projectedStock.get(change.value.repuestoId) ?? change.value.stockAnterior;
+            const stockResultante = change.value.tipo === "entrada"
+              ? stockAnterior + change.value.cantidad
+              : change.value.tipo === "salida"
+                ? stockAnterior - change.value.cantidad
+                : change.value.cantidad;
+            if (repuesto) {
+              repuesto.existencia = stockResultante;
+              projectedStock.set(repuesto.id, stockResultante);
+            }
+            projectedMovimientos.unshift({
+              id: change.id,
+              repuestoId: change.value.repuestoId,
+              repuestoNombre: change.value.repuestoNombre,
+              repuestoCodigo: change.value.repuestoCodigo,
+              sucursal: change.value.sucursal,
+              tipo: change.value.tipo,
+              cantidad: change.value.cantidad,
+              stockAnterior,
+              stockResultante,
+              motivo: change.value.motivo,
+              folioReferencia: change.value.folioReferencia,
+              fecha: new Date(Number(change.id.slice(0, 13))).toLocaleString(),
+              usuarioId: change.value.usuarioId,
+              usuarioNombre: change.value.usuarioNombre,
+              notas: change.value.notas,
+            });
+            break;
+          }
+          case "create-tool":
+            projectedHerramientas.push({ ...change.value.tool, id: change.value.localId });
+            break;
+          case "update-tool": {
+            const index = projectedHerramientas.findIndex((item) => item.id === change.value.id);
+            if (index >= 0) projectedHerramientas[index] = change.value;
+            break;
+          }
+          case "delete-tool":
+            for (let index = projectedHerramientas.length - 1; index >= 0; index--) {
+              if (projectedHerramientas[index].id === change.value.id) projectedHerramientas.splice(index, 1);
+            }
+            break;
+        }
       }
+      setRepuestos(projectedRepuestos);
+      setHerramientas(projectedHerramientas);
+      setMovimientos(projectedMovimientos);
+      setRespaldoListoParaUsuario(requestedUserId);
       const idMap = new Map<string, string>();
       const existenciaActual = new Map(dbReps.value.map((repuesto) => [repuesto.id, repuesto.existencia]));
       for (const change of pending) {
@@ -704,8 +770,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     nuevaPassword: string,
     conservarRecuperacion = false
   ): Promise<{ ok: boolean; error?: string }> => {
-    const cleanPass = nuevaPassword.trim();
-    if (!cleanPass || cleanPass.length < 6) {
+    if (!nuevaPassword.trim() || nuevaPassword.length < 6) {
       return { ok: false, error: "La contraseña debe tener al menos 6 caracteres." };
     }
 
@@ -724,7 +789,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (isSupabaseConfigured && supabase) {
       setSincronizando(true);
       try {
-        const resDb = await dbCambiarPasswordUsuario(cleanPass, usuarioEmail);
+        const resDb = await dbCambiarPasswordUsuario(nuevaPassword, usuarioEmail);
         if (!resDb.ok) {
           return { ok: false, error: resDb.error || "No se pudo actualizar la contraseña." };
         }
@@ -741,7 +806,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (usuarioActual) {
       const usuarioActualizado: Usuario = {
         ...usuarioActual,
-        password: isSupabaseConfigured ? "" : cleanPass,
+        password: isSupabaseConfigured ? "" : nuevaPassword,
         passwordTemporal: false,
       };
       setUsuarioActual(usuarioActualizado);

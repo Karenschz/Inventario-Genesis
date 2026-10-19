@@ -33,6 +33,7 @@ function Modal({
   esGerente: boolean;
 }) {
   const [form, setForm] = useState(herramienta);
+  const [precio, setPrecio] = useState(String(herramienta.precio ?? 0));
   const set = <K extends keyof typeof form>(k: K, v: (typeof form)[K]) => setForm((p) => ({ ...p, [k]: v }));
 
   return (
@@ -65,7 +66,7 @@ function Modal({
           </div>
           <div>
             <label className="block text-xs font-medium text-[var(--muted-foreground)] mb-1">Precio</label>
-            <input type="number" min="0" step="0.01" value={form.precio ?? 0} onChange={(e) => set("precio", Number(e.target.value) || 0)} className="input-field" placeholder="2500" />
+            <input type="number" min="0" step="0.01" value={precio} onChange={(e) => setPrecio(e.target.value)} className="input-field" placeholder="2500" />
           </div>
           {esGerente && (
             <div>
@@ -90,7 +91,7 @@ function Modal({
         </div>
         <div className="flex justify-end gap-2 px-5 py-4 border-t border-[var(--border)]">
           <button onClick={onClose} className="btn-secondary">Cancelar</button>
-          <button onClick={() => { if (form.nombre) onSave(form); }} className="btn-primary">Guardar</button>
+          <button onClick={() => { if (form.nombre) onSave({ ...form, precio: Math.max(0, Number(precio) || 0) }); }} className="btn-primary">Guardar</button>
         </div>
       </div>
     </div>
