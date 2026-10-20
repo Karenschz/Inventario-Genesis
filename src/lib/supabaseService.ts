@@ -555,31 +555,34 @@ export async function dbActualizarRepuesto(r: Repuesto): Promise<boolean> {
 export async function dbEliminarRepuesto(id: string): Promise<boolean> {
   if (!supabase) throw new Error("Supabase no está configurado.");
   try {
-    if (!/^\d+$/.test(id)) throw new Error(`El identificador "${id}" no es un ID válido de Supabase.`);
+    if (!/^\d+$/.test(id)) {
+      // Si el id no es numérico (por ejemplo un id temporal local 'id_...'),
+      // significa que nunca llegó a persistirse en Supabase o es un borrador local.
+      return true;
+    }
     const numId = Number(id);
 
     const { data: invRow, error: inventoryLookupError } = await supabase
       .from("inventario_repuestos")
-      .select("repuesto_id")
+      .select("repuesto_id, sucursal_id")
       .eq("id", numId)
       .maybeSingle();
     if (inventoryLookupError) throw inventoryLookupError;
     if (!invRow) return true;
 
     const repuestoId = invRow?.repuesto_id;
+    const sucursalId = invRow?.sucursal_id;
 
-    if (repuestoId) {
-      const { error: movementByPartError } = await supabase
+    if (repuestoId && sucursalId) {
+      const { error: movementError } = await supabase
         .from("movimientos_kardex")
         .delete()
-        .eq("repuesto_id", repuestoId);
-      if (movementByPartError) throw movementByPartError;
+        .eq("repuesto_id", repuestoId)
+        .eq("sucursal_id", sucursalId);
+      if (movementError) {
+        console.warn("No se pudieron eliminar movimientos de kardex asociados a esta sucursal:", movementError);
+      }
     }
-    const { error: movementByInventoryError } = await supabase
-      .from("movimientos_kardex")
-      .delete()
-      .eq("inventario_id", numId);
-    if (movementByInventoryError) throw movementByInventoryError;
 
     const { data: deletedInventory, error: invDeleteErr } = await supabase
       .from("inventario_repuestos")
@@ -606,6 +609,11 @@ export async function dbEliminarRepuesto(id: string): Promise<boolean> {
       }
 
       if (count === 0) {
+        await supabase
+          .from("movimientos_kardex")
+          .delete()
+          .eq("repuesto_id", repuestoId);
+
         const { data: deletedPart, error: partDeleteError } = await supabase
           .from("repuestos")
           .delete()
