@@ -115,8 +115,6 @@ export interface MovimientoInventario {
 
 export interface WhatsAppConfig {
   activo: boolean;
-  instanceId: string;
-  token: string;
   tipoDestinatario: "individual" | "grupo";
   destinatario: string; // Número internacional (ej: 50212345678) o Group ID (ej: 1203630...@g.us)
   notificarStockMinimo?: boolean;
@@ -140,4 +138,3 @@ export interface WhatsAppSendResult {
   messageId?: string;
   error?: string;
 }
-

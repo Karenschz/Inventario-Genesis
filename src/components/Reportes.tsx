@@ -427,7 +427,9 @@ function generarReportePDF(
 
   // ── GUARDAR ──────────────────────────────────────────────────────────────────
   const sucursalSuffix = sucursalFiltro === "todas" ? "todas" : sucursalFiltro;
-  const fileName = `reporte_semanal_${sucursalSuffix}_${fmtDate(monday).replace(/\//g, "-")}.pdf`;
+  const fechaDescarga = new Date();
+  const fechaArchivo = `${fechaDescarga.getFullYear()}-${String(fechaDescarga.getMonth() + 1).padStart(2, "0")}-${String(fechaDescarga.getDate()).padStart(2, "0")}`;
+  const fileName = `reporte_semanal_${sucursalSuffix}_${fechaArchivo}.pdf`;
   doc.save(fileName);
 }
 

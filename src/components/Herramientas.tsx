@@ -33,6 +33,7 @@ function Modal({
   esGerente: boolean;
 }) {
   const [form, setForm] = useState(herramienta);
+  const [precio, setPrecio] = useState(String(herramienta.precio ?? 0));
   const set = <K extends keyof typeof form>(k: K, v: (typeof form)[K]) => setForm((p) => ({ ...p, [k]: v }));
 
   return (
@@ -65,7 +66,7 @@ function Modal({
           </div>
           <div>
             <label className="block text-xs font-medium text-[var(--muted-foreground)] mb-1">Precio</label>
-            <input type="number" min="0" step="0.01" value={form.precio ?? 0} onChange={(e) => set("precio", Number(e.target.value) || 0)} className="input-field" placeholder="2500" />
+            <input type="number" min="0" step="0.01" value={precio} onChange={(e) => setPrecio(e.target.value)} className="input-field" placeholder="2500" />
           </div>
           {esGerente && (
             <div>
@@ -90,7 +91,7 @@ function Modal({
         </div>
         <div className="flex justify-end gap-2 px-5 py-4 border-t border-[var(--border)]">
           <button onClick={onClose} className="btn-secondary">Cancelar</button>
-          <button onClick={() => { if (form.nombre) onSave(form); }} className="btn-primary">Guardar</button>
+          <button onClick={() => { if (form.nombre) onSave({ ...form, precio: Math.max(0, Number(precio) || 0) }); }} className="btn-primary">Guardar</button>
         </div>
       </div>
     </div>
@@ -103,6 +104,12 @@ function generarReporteHerramientasPDF(
   sucursal: Sucursal
 ) {
   const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+  const fechaDescarga = new Date();
+  const fechaArchivo = [
+    fechaDescarga.getFullYear(),
+    String(fechaDescarga.getMonth() + 1).padStart(2, "0"),
+    String(fechaDescarga.getDate()).padStart(2, "0"),
+  ].join("-");
   const pageW = doc.internal.pageSize.getWidth();
   const pageH = doc.internal.pageSize.getHeight();
   const margin = 14;
@@ -139,7 +146,11 @@ function generarReporteHerramientasPDF(
   doc.setFontSize(9);
   doc.setTextColor(220, 220, 220);
   doc.text(`Sucursal: ${SUCURSALES[sucursal]}`, margin + 4, 23);
-  doc.text(`Fecha: ${new Date().toLocaleDateString("es-MX")}`, margin + 4, 29);
+  doc.text(
+    `Descargado: ${fechaDescarga.toLocaleString("es-MX", { dateStyle: "short", timeStyle: "short" })}`,
+    margin + 4,
+    29
+  );
 
   const summaryBlocks = [
     { label: "Inventario", value: fmtMoney(valorInventario) },
@@ -242,7 +253,7 @@ function generarReporteHerramientasPDF(
   doc.setTextColor(12, 12, 12);
   doc.text("SUMA TOTAL DEL REPORTE: " + fmtMoney(totalGeneral), margin, pageH - 18);
 
-  const fileName = `reporte_herramientas_mobiliario_${SUCURSALES[sucursal].replace(/\s+/g, "_").toLowerCase()}.pdf`;
+  const fileName = `reporte_herramientas_mobiliario_${SUCURSALES[sucursal].replace(/\s+/g, "_").toLowerCase()}_${fechaArchivo}.pdf`;
   doc.save(fileName);
 }
 
@@ -341,12 +352,14 @@ export default function Herramientas() {
             <p className="text-sm text-[var(--muted-foreground)] mt-0.5">Control de uso, reparación y valor del inventario</p>
           </div>
           <div className="flex items-center gap-2">
-            <button onClick={generarPdfContable} className="btn-secondary flex items-center gap-2">
-              <svg viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
-                <path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 6a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h6a1 1 0 100-2H7z" clipRule="evenodd" />
-              </svg>
-              Descargar PDF
-            </button>
+            {esGerente && (
+              <button onClick={generarPdfContable} className="btn-secondary flex items-center gap-2">
+                <svg viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
+                  <path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 6a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h6a1 1 0 100-2H7z" clipRule="evenodd" />
+                </svg>
+                Descargar PDF
+              </button>
+            )}
 
             <button onClick={() => setModal({ tipo: "nuevo", data: { ...EMPTY, sucursal: esGerente ? sucursalTab : usuarioActual.sucursal } })} className="btn-primary flex items-center gap-2">
               <svg viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4"><path d="M10.75 4.75a.75.75 0 0 0-1.5 0v4.5h-4.5a.75.75 0 0 0 0 1.5h4.5v4.5a.75.75 0 0 0 1.5 0v-4.5h4.5a.75.75 0 0 0 0-1.5h-4.5v-4.5Z" /></svg>
@@ -374,10 +387,7 @@ export default function Herramientas() {
             <p className="text-xs text-[var(--muted-foreground)] mb-1">Disponibles</p>
             <p className="text-2xl font-bold font-mono-data text-[var(--success)]">{disponibles}</p>
           </div>
-          <div className="bg-[var(--card)] border border-[var(--accent)]/20 rounded-xl p-4">
-            <p className="text-xs text-[var(--muted-foreground)] mb-1">En uso</p>
-            <p className="text-2xl font-bold font-mono-data text-[var(--accent)]">{enUso}</p>
-          </div>
+  
           <div className="bg-[var(--card)] border border-amber-500/20 rounded-xl p-4">
             <p className="text-xs text-[var(--muted-foreground)] mb-1">Reparación</p>
             <p className="text-2xl font-bold font-mono-data text-amber-500">{enReparacion}</p>

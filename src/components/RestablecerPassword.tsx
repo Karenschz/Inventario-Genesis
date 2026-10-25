@@ -6,6 +6,7 @@ export default function RestablecerPassword() {
   const [password, setPassword] = useState("");
   const [confirmacion, setConfirmacion] = useState("");
   const [error, setError] = useState("");
+  const [aviso, setAviso] = useState("");
   const [guardando, setGuardando] = useState(false);
   const [guardada, setGuardada] = useState(false);
 
@@ -29,6 +30,7 @@ export default function RestablecerPassword() {
         setError(result.error || "No se pudo actualizar la contraseña.");
         return;
       }
+      setAviso(result.warning || "");
       setGuardada(true);
       window.history.replaceState(null, "", window.location.pathname);
     } catch {
@@ -73,6 +75,11 @@ export default function RestablecerPassword() {
               <p className="text-sm text-[var(--muted-foreground)] mt-2 mb-6">
                 Ya puedes continuar con tu nueva contraseña.
               </p>
+              {aviso && (
+                <p role="status" className="text-left text-xs text-amber-300 bg-amber-950/30 border border-amber-700/40 rounded-lg px-3 py-2.5 mb-4">
+                  {aviso}
+                </p>
+              )}
               <button
                 type="button"
                 onClick={() => setDebeCambiarPassword(false)}

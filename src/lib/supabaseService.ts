@@ -9,12 +9,6 @@ import type {
   CategoriaRepuesto,
   TipoMovimiento,
 } from "../types";
-import {
-  usuariosIniciales,
-  repuestosIniciales,
-  herramientasIniciales,
-  movimientosIniciales,
-} from "../data";
 
 // Conversión de IDs de sucursal Supabase (1, 2) a tipos de frontend ("sucursal1", "sucursal2")
 export function mapSucursalId(id: number | string): Sucursal {
@@ -29,6 +23,365 @@ export function unmapSucursalId(sucursal: Sucursal): number {
 // Sanitizar patrones de búsqueda ILIKE para evitar inyección de comodines (% y _)
 export function sanitizeLikePattern(pattern: string): string {
   return pattern.replace(/[%_]/g, "\\$&").trim();
+}
+
+const BACKUP_TABLES = [
+  "sucursales",
+  "categorias_repuestos",
+  "proveedores",
+  "repuestos",
+  "inventario_repuestos",
+  "herramientas",
+  "movimientos_kardex",
+] as const;
+
+export type BackupTableName = (typeof BACKUP_TABLES)[number] | "usuarios";
+const USER_EXPORT_COLUMNS =
+  "id, auth_id, sucursal_id, nombre, email, rol, activo, password_temporal";
+
+function sqlIdentificador(identifier: string): string {
+  return `"${identifier.replace(/"/g, '""')}"`;
+}
+
+function sqlJsonb(value: unknown): string {
+  return `'${JSON.stringify(value).replace(/'/g, "''")}'::jsonb`;
+}
+
+function crearInsercionesRespaldo(
+  table: string,
+  rows: Record<string, unknown>[]
+): string[] {
+  if (table === "usuarios") {
+    return rows.flatMap((row) => {
+      const fields = Object.keys(row).filter((field) => field !== "id");
+      if (row.id === undefined || fields.length === 0) return [];
+
+      const assignments = fields
+        .map((field) => `  ${sqlIdentificador(field)} = datos.${sqlIdentificador(field)}`)
+        .join(",\n");
+
+      return [
+        `UPDATE public.${sqlIdentificador(table)} AS actual\n` +
+          `SET\n${assignments}\n` +
+          `FROM jsonb_populate_record(NULL::public.${sqlIdentificador(table)}, ${sqlJsonb(row)}) AS datos\n` +
+          `WHERE actual.${sqlIdentificador("id")} = datos.${sqlIdentificador("id")};`,
+      ];
+    });
+  }
+
+  const statements: string[] = [];
+  const chunkSize = 250;
+
+  for (let index = 0; index < rows.length; index += chunkSize) {
+    const batch = rows.slice(index, index + chunkSize);
+    statements.push(
+      `INSERT INTO public.${sqlIdentificador(table)}\n` +
+        `SELECT *\n` +
+        `FROM jsonb_populate_recordset(NULL::public.${sqlIdentificador(table)}, ${sqlJsonb(batch)})\n` +
+        `ON CONFLICT DO NOTHING;`
+    );
+  }
+
+  return statements;
+}
+
+export async function dbExportarRespaldo(): Promise<string> {
+  if (!supabase || !isSupabaseConfigured) {
+    throw new Error("Supabase no está configurado.");
+  }
+
+  const statements: string[] = [];
+  const pageSize = 1000;
+
+  for (const table of BACKUP_TABLES) {
+    const rows: Record<string, unknown>[] = [];
+    let from = 0;
+
+    while (true) {
+      const result = await supabase
+        .from(table)
+        .select("*")
+        .range(from, from + pageSize - 1);
+
+      if (result.error) {
+        throw new Error(`No se pudo exportar la tabla ${table}: ${result.error.message}`);
+      }
+
+      const page = (result.data || []) as Record<string, unknown>[];
+      rows.push(...page);
+      if (page.length < pageSize) break;
+      from += pageSize;
+    }
+
+    const safeRows = rows;
+    statements.push(...crearInsercionesRespaldo(table, safeRows));
+  }
+
+  return [
+    "-- Respaldo de datos de Genesis generado desde la aplicacion.",
+    `-- Fecha de exportacion: ${new Date().toISOString()}`,
+    "-- Inserta filas faltantes sin duplicar; no elimina datos existentes.",
+    "-- No incluye usuarios ni contrasenas.",
+    "-- Requiere que el esquema y las tablas de Supabase ya existan.",
+    "BEGIN;",
+    ...statements,
+    "COMMIT;",
+    "",
+  ].join("\n\n");
+}
+
+type BackupData = Partial<Record<BackupTableName, Record<string, unknown>[]>>;
+
+function leerRespaldoSQL(sql: string): BackupData {
+  const contenido = sql.replace(/\r\n?/g, "\n").trim();
+  const inicio = contenido.indexOf("\nBEGIN;");
+  const fin = contenido.lastIndexOf("\nCOMMIT;");
+
+  if (
+    !contenido.startsWith("-- Respaldo de datos de Genesis generado desde la aplicacion.") ||
+    inicio < 0 ||
+    fin < inicio ||
+    contenido.slice(fin + "\nCOMMIT;".length).trim() !== ""
+  ) {
+    throw new Error("El archivo no tiene el formato de un respaldo SQL de Genesis.");
+  }
+
+  const datos: BackupData = {};
+  let restante = contenido.slice(inicio + "\nBEGIN;".length, fin).trim();
+  const escaparCadenaSQL = (value: string) => value.replace(/''/g, "'");
+
+  while (restante) {
+    const tablaMatch = restante.match(/^(INSERT INTO|UPDATE) public\."([^"]+)"/);
+    if (!tablaMatch) {
+      throw new Error("El respaldo contiene una instrucción no compatible.");
+    }
+
+    const operacion = tablaMatch[1];
+    const tabla = tablaMatch[2] as BackupTableName;
+    if (tabla !== "usuarios" && !BACKUP_TABLES.includes(tabla)) {
+      throw new Error(`El respaldo contiene una tabla no permitida: ${tabla}.`);
+    }
+
+    let coincidencia: RegExpExecArray | null;
+    if (operacion === "INSERT INTO" && tabla !== "usuarios") {
+      const patron = new RegExp(
+        `^INSERT INTO public\\."${tabla}"\\s+SELECT \\*\\s+FROM jsonb_populate_recordset\\(NULL::public\\."${tabla}", '((?:''|[^'])*)'::jsonb\\)\\s+ON CONFLICT DO NOTHING;`
+      );
+      coincidencia = patron.exec(restante);
+      if (!coincidencia) {
+        throw new Error(`La instrucción de respaldo para ${tabla} no es válida.`);
+      }
+    } else if (operacion === "UPDATE" && tabla === "usuarios") {
+      const patron =
+        /^UPDATE public\."usuarios" AS actual\nSET\n((?:  "[A-Za-z_][A-Za-z0-9_]*" = datos\."[A-Za-z_][A-Za-z0-9_]*",?\n)+)FROM jsonb_populate_record\(NULL::public\."usuarios", '((?:''|[^'])*)'::jsonb\) AS datos\nWHERE actual\."id" = datos\."id";/;
+      coincidencia = patron.exec(restante);
+      if (!coincidencia) {
+        throw new Error("La instrucción de respaldo para usuarios no es válida.");
+      }
+    } else {
+      throw new Error(`La operación de respaldo para ${tabla} no es compatible.`);
+    }
+
+    const valorJSON = escaparCadenaSQL(coincidencia[operacion === "UPDATE" ? 2 : 1]);
+    let filas: unknown;
+    try {
+      filas = JSON.parse(valorJSON);
+    } catch {
+      throw new Error(`Los datos de la tabla ${tabla} no contienen JSON válido.`);
+    }
+
+    if (operacion === "INSERT INTO") {
+      if (!Array.isArray(filas) || filas.some((fila) => !fila || typeof fila !== "object" || Array.isArray(fila))) {
+        throw new Error(`Los datos de la tabla ${tabla} tienen un formato inválido.`);
+      }
+      datos[tabla] = [...(datos[tabla] ?? []), ...(filas as Record<string, unknown>[])];
+    } else {
+      if (!filas || typeof filas !== "object" || Array.isArray(filas)) {
+        throw new Error("Los datos de usuarios tienen un formato inválido.");
+      }
+      const usuario = filas as Record<string, unknown>;
+      const camposPermitidos = new Set(USER_EXPORT_COLUMNS.split(", "));
+      if (
+        usuario.id === undefined ||
+        Object.keys(usuario).some((campo) => !camposPermitidos.has(campo))
+      ) {
+        throw new Error("El respaldo contiene campos de usuario no permitidos.");
+      }
+      const asignaciones = coincidencia[1].trimEnd().split("\n").map((linea) => {
+        const asignacion = linea.match(/^  "([^"]+)" = datos\."([^"]+)"[,]?$/);
+        return asignacion && asignacion[1] === asignacion[2] ? asignacion[1] : null;
+      });
+      const camposEsperados = Object.keys(usuario).filter((campo) => campo !== "id");
+      if (
+        asignaciones.some((campo) => campo === null) ||
+        asignaciones.length !== camposEsperados.length ||
+        asignaciones.some((campo, index) => campo !== camposEsperados[index])
+      ) {
+        throw new Error("Los campos de actualización de usuarios no coinciden con sus datos.");
+      }
+      datos.usuarios = [...(datos.usuarios ?? []), usuario];
+    }
+
+    restante = restante.slice(coincidencia[0].length).trim();
+  }
+
+  return datos;
+}
+
+export async function dbRestaurarRespaldo(sql: string): Promise<Record<BackupTableName, number>> {
+  if (!supabase || !isSupabaseConfigured) {
+    throw new Error("Supabase no está configurado.");
+  }
+
+  const datos = leerRespaldoSQL(sql);
+  const mapasIds: Partial<Record<BackupTableName, Map<string, unknown>>> = {};
+  const idsDuplicados: Partial<Record<BackupTableName, Set<string>>> = {};
+  const clavesUnicas = [
+    ["categorias_repuestos", "nombre"],
+    ["proveedores", "razon_social"],
+    ["repuestos", "codigo_parte"],
+    ["herramientas", "codigo_unico"],
+  ] as const;
+
+  for (const [tabla, columna] of clavesUnicas) {
+    const filas = datos[tabla] ?? [];
+    const valores = [...new Set(filas
+      .map((fila) => fila[columna])
+      .filter((valor): valor is string => typeof valor === "string" && valor.length > 0))];
+    if (valores.length === 0) continue;
+
+    const { data, error } = await supabase
+      .from(tabla)
+      .select(`id, ${columna}`)
+      .in(columna, valores);
+    if (error) {
+      throw new Error(`No se pudieron revisar duplicados en ${tabla}: ${error.message}`);
+    }
+
+    const idPorClave = new Map<string, unknown>();
+    for (const fila of (data ?? []) as Record<string, unknown>[]) {
+      const clave = fila[columna];
+      if (typeof clave === "string" && !idPorClave.has(clave)) {
+        idPorClave.set(clave, fila.id);
+      }
+    }
+
+    const mapaIds = new Map<string, unknown>();
+    const idsYaExistentes = new Set<string>();
+    for (const fila of filas) {
+      const clave = fila[columna];
+      if (typeof clave !== "string" || fila.id === undefined) continue;
+      const idExistente = idPorClave.get(clave);
+      const claveYaIncluida = idPorClave.has(clave);
+      const idCanonico = claveYaIncluida ? idExistente : fila.id;
+      if (claveYaIncluida) {
+        idsYaExistentes.add(String(fila.id));
+      } else {
+        idPorClave.set(clave, idCanonico);
+      }
+      mapaIds.set(String(fila.id), idCanonico);
+    }
+    mapasIds[tabla] = mapaIds;
+    idsDuplicados[tabla] = idsYaExistentes;
+  }
+
+  const remapearReferencia = (
+    tabla: BackupTableName,
+    columna: string,
+    mapa: Map<string, unknown> | undefined,
+  ) => {
+    if (!mapa) return;
+    for (const fila of datos[tabla] ?? []) {
+      const id = fila[columna];
+      if (id !== undefined) fila[columna] = mapa.get(String(id)) ?? id;
+    }
+  };
+
+  remapearReferencia("repuestos", "categoria_id", mapasIds.categorias_repuestos);
+  remapearReferencia("repuestos", "proveedor_id", mapasIds.proveedores);
+  remapearReferencia("inventario_repuestos", "repuesto_id", mapasIds.repuestos);
+  remapearReferencia("movimientos_kardex", "repuesto_id", mapasIds.repuestos);
+  for (const movimiento of datos.movimientos_kardex ?? []) {
+    if (movimiento.usuario_id !== null && movimiento.usuario_id !== undefined) {
+      movimiento.usuario_id = null;
+    }
+  }
+
+  const restaurados = Object.fromEntries([["usuarios", 0], ...BACKUP_TABLES.map((tabla) => [tabla, 0])]) as Record<
+    BackupTableName,
+    number
+  >;
+
+  for (const tabla of BACKUP_TABLES) {
+    const filas = (datos[tabla] ?? []).filter(
+      (fila) => !idsDuplicados[tabla]?.has(String(fila.id))
+    );
+    for (let indice = 0; indice < filas.length; indice += 250) {
+      const lote = filas.slice(indice, indice + 250);
+      const { data, error } = await supabase
+        .from(tabla)
+        .upsert(lote, { ignoreDuplicates: true })
+        .select("id");
+      if (error) {
+        throw new Error(
+          `Falló la restauración en ${tabla}; la carga puede estar incompleta: ${error.message}`
+        );
+      }
+      restaurados[tabla] += data?.length ?? 0;
+    }
+  }
+
+  return restaurados;
+}
+
+export async function dbExportarTablaCSV(table: BackupTableName): Promise<string> {
+  if (!supabase || !isSupabaseConfigured) {
+    throw new Error("Supabase no está configurado.");
+  }
+
+  const rows: Record<string, unknown>[] = [];
+  const pageSize = 1000;
+  let from = 0;
+
+  while (true) {
+    const result = table === "usuarios"
+      ? await supabase
+          .from("usuarios")
+          .select(USER_EXPORT_COLUMNS)
+          .range(from, from + pageSize - 1)
+      : await supabase
+          .from(table)
+          .select("*")
+          .range(from, from + pageSize - 1);
+
+    if (result.error) {
+      throw new Error(`No se pudo exportar la tabla ${table}: ${result.error.message}`);
+    }
+
+    const page = (result.data || []) as Record<string, unknown>[];
+    rows.push(...page);
+    if (page.length < pageSize) break;
+    from += pageSize;
+  }
+
+  const safeRows = rows;
+  const columns = Object.keys(safeRows[0] || {});
+  if (columns.length === 0) return "";
+
+  const csvCell = (value: unknown) => {
+    const text = value !== null && typeof value === "object"
+      ? JSON.stringify(value)
+      : String(value ?? "");
+    const safeText = typeof value === "string" && /^[=+@\-\t\r]/.test(text)
+      ? `'${text}`
+      : text;
+    return `"${safeText.replace(/"/g, '""')}"`;
+  };
+
+  return [
+    columns.map(csvCell).join(","),
+    ...safeRows.map((row) => columns.map((column) => csvCell(row[column])).join(",")),
+  ].join("\r\n") + "\r\n";
 }
 
 // 0. Diagnóstico de Conexión
@@ -70,15 +423,15 @@ export async function dbProbarConexion(): Promise<ConnectionDiagnostic> {
 
   for (const table of tablesToCheck) {
     try {
-      const { count, error } = await supabase
-        .from(table)
-        .select("*", { count: "exact", head: true });
+      const result = table === "usuarios"
+        ? await supabase.from("usuarios").select("id", { count: "exact", head: true })
+        : await supabase.from(table).select("*", { count: "exact", head: true });
 
-      if (error) {
-        tableResults[table] = { ok: false, count: 0, error: error.message };
+      if (result.error) {
+        tableResults[table] = { ok: false, count: 0, error: result.error.message };
         anyError = true;
       } else {
-        tableResults[table] = { ok: true, count: count ?? 0 };
+        tableResults[table] = { ok: true, count: result.count ?? 0 };
       }
     } catch (err: any) {
       tableResults[table] = { ok: false, count: 0, error: err?.message || "Error al consultar" };
@@ -151,46 +504,60 @@ export async function dbCrearRepuesto(r: Omit<Repuesto, "id">): Promise<string |
   if (!supabase) return null;
 
   try {
-    let categoriaId = 10;
+    let categoriaId: number | null = null;
     const safeCat = sanitizeLikePattern(r.categoria);
-    const { data: catData } = await supabase
+    const { data: catData, error: categoryError } = await supabase
       .from("categorias_repuestos")
       .select("id")
       .ilike("nombre", safeCat)
       .limit(1);
+    if (categoryError) throw categoryError;
 
     if (catData && catData.length > 0) {
       categoriaId = catData[0].id;
+    } else {
+      const { data: newCategory, error: categoryInsertError } = await supabase
+        .from("categorias_repuestos")
+        .insert({ nombre: r.categoria.trim() })
+        .select("id")
+        .single();
+      if (categoryInsertError) throw categoryInsertError;
+      categoriaId = newCategory?.id ?? null;
     }
+    if (categoriaId === null) throw new Error(`No se pudo resolver la categoría "${r.categoria}".`);
 
-    let proveedorId = 1;
-    if (r.proveedor) {
+    let proveedorId: number | null = null;
+    if (r.proveedor.trim()) {
       const safeProv = sanitizeLikePattern(r.proveedor);
-      const { data: provData } = await supabase
+      const { data: provData, error: providerLookupError } = await supabase
         .from("proveedores")
         .select("id")
         .ilike("razon_social", safeProv)
         .limit(1);
+      if (providerLookupError) throw providerLookupError;
 
       if (provData && provData.length > 0) {
         proveedorId = provData[0].id;
       } else {
-        const { data: newProv } = await supabase
+        const { data: newProv, error: proveedorError } = await supabase
           .from("proveedores")
           .insert({ razon_social: r.proveedor.trim() })
           .select("id")
           .single();
-        if (newProv) proveedorId = newProv.id;
+        if (proveedorError) throw proveedorError;
+        proveedorId = newProv?.id ?? null;
+        if (proveedorId === null) throw new Error(`No se pudo crear el proveedor "${r.proveedor}".`);
       }
     }
 
     let repuestoId: number | null = null;
     const safeCodigo = sanitizeLikePattern(r.codigo);
-    const { data: existingRep } = await supabase
+    const { data: existingRep, error: repuestoLookupError } = await supabase
       .from("repuestos")
       .select("id")
       .ilike("codigo_parte", safeCodigo)
       .limit(1);
+    if (repuestoLookupError) throw repuestoLookupError;
 
     if (existingRep && existingRep.length > 0) {
       repuestoId = existingRep[0].id;
@@ -209,23 +576,24 @@ export async function dbCrearRepuesto(r: Omit<Repuesto, "id">): Promise<string |
 
       if (repErr || !newRep) {
         console.error("Error insertando repuesto maestro:", repErr);
-        return null;
+        throw repErr ?? new Error("No se creó el registro maestro del repuesto.");
       }
       repuestoId = newRep.id;
     }
 
     const targetSucursalId = unmapSucursalId(r.sucursal);
 
-    const { data: existingInv } = await supabase
+    const { data: existingInv, error: inventoryLookupError } = await supabase
       .from("inventario_repuestos")
       .select("id")
       .eq("repuesto_id", repuestoId)
       .eq("sucursal_id", targetSucursalId)
       .limit(1);
+    if (inventoryLookupError) throw inventoryLookupError;
 
     if (existingInv && existingInv.length > 0) {
       const invId = existingInv[0].id;
-      await supabase
+      const { error: updateError } = await supabase
         .from("inventario_repuestos")
         .update({
           existencia: r.existencia,
@@ -236,6 +604,7 @@ export async function dbCrearRepuesto(r: Omit<Repuesto, "id">): Promise<string |
           ultima_compra: r.fechaUltimaCompra || new Date().toISOString().split("T")[0],
         })
         .eq("id", invId);
+      if (updateError) throw updateError;
       return String(invId);
     }
 
@@ -256,13 +625,13 @@ export async function dbCrearRepuesto(r: Omit<Repuesto, "id">): Promise<string |
 
     if (invErr || !newInv) {
       console.error("Error insertando inventario_repuesto:", invErr);
-      return String(repuestoId);
+      throw invErr ?? new Error("No se creó el registro de inventario del repuesto.");
     }
 
     return String(newInv.id);
   } catch (e) {
     console.error("Excepción al crear repuesto:", e);
-    return null;
+    throw e;
   }
 }
 
@@ -305,7 +674,12 @@ export async function dbActualizarRepuesto(r: Repuesto): Promise<boolean> {
       repuestoId = invSearch?.repuesto_id;
     }
 
-    if (repuestoId) {
+    if (!repuestoId) {
+      console.error("No existe el registro de inventario que se intenta actualizar:", r.id);
+      return false;
+    }
+
+    {
       // B. Resolver Categoria ID
       let categoriaId: number | null = null;
       if (r.categoria && r.categoria.trim()) {
@@ -377,59 +751,86 @@ export async function dbActualizarRepuesto(r: Repuesto): Promise<boolean> {
 
 // 4. Eliminar Repuesto en Supabase
 export async function dbEliminarRepuesto(id: string): Promise<boolean> {
-  if (!supabase) return false;
+  if (!supabase) throw new Error("Supabase no está configurado.");
   try {
-    const numId = parseInt(id);
-    if (isNaN(numId)) return false;
+    if (!/^\d+$/.test(id)) {
+      // Si el id no es numérico (por ejemplo un id temporal local 'id_...'),
+      // significa que nunca llegó a persistirse en Supabase o es un borrador local.
+      return true;
+    }
+    const numId = Number(id);
 
-    // 1. Obtener repuesto_id asociado
-    const { data: invRow } = await supabase
+    const { data: invRow, error: inventoryLookupError } = await supabase
       .from("inventario_repuestos")
-      .select("repuesto_id")
+      .select("repuesto_id, sucursal_id")
       .eq("id", numId)
       .maybeSingle();
+    if (inventoryLookupError) throw inventoryLookupError;
+    if (!invRow) return true;
 
     const repuestoId = invRow?.repuesto_id;
+    const sucursalId = invRow?.sucursal_id;
 
-    // 2. Eliminar referencias en movimientos_kardex para evitar error 409 (Foreign Key Violation)
-    if (repuestoId) {
-      await supabase
+    if (repuestoId && sucursalId) {
+      const { error: movementError } = await supabase
         .from("movimientos_kardex")
         .delete()
-        .eq("repuesto_id", repuestoId);
+        .eq("repuesto_id", repuestoId)
+        .eq("sucursal_id", sucursalId);
+      if (movementError) {
+        console.warn("No se pudieron eliminar movimientos de kardex asociados a esta sucursal:", movementError);
+      }
     }
-    await supabase
-      .from("movimientos_kardex")
-      .delete()
-      .eq("inventario_id", numId);
 
-    // 3. Eliminar de inventario_repuestos
-    const { error: invDeleteErr } = await supabase
+    const { data: deletedInventory, error: invDeleteErr } = await supabase
       .from("inventario_repuestos")
       .delete()
-      .eq("id", numId);
+      .eq("id", numId)
+      .select("id");
 
     if (invDeleteErr) {
       console.error("Error eliminando de inventario_repuestos:", invDeleteErr);
-      return false;
+      throw invDeleteErr;
+    }
+    if (!deletedInventory?.length) {
+      throw new Error("Supabase no eliminó el registro de inventario. Verifica los permisos de borrado (políticas RLS) de tu usuario.");
     }
 
-    // 4. Si ninguna otra fila usa este repuesto maestro, eliminar de repuestos
     if (repuestoId) {
-      const { count } = await supabase
+      const { count, error: countError } = await supabase
         .from("inventario_repuestos")
         .select("id", { count: "exact", head: true })
         .eq("repuesto_id", repuestoId);
+      if (countError) {
+        console.warn("Se eliminó el inventario, pero no se pudo verificar si el repuesto maestro quedó sin sucursales:", countError);
+        return true;
+      }
 
       if (count === 0) {
-        await supabase.from("repuestos").delete().eq("id", repuestoId);
+        await supabase
+          .from("movimientos_kardex")
+          .delete()
+          .eq("repuesto_id", repuestoId);
+
+        const { data: deletedPart, error: partDeleteError } = await supabase
+          .from("repuestos")
+          .delete()
+          .eq("id", repuestoId)
+          .select("id");
+        if (partDeleteError) {
+          console.warn("Se eliminó el inventario, pero no se pudo limpiar el repuesto maestro:", partDeleteError);
+          return true;
+        }
+        if (!deletedPart?.length) {
+          console.warn("Se eliminó el inventario, pero Supabase no permitió limpiar el repuesto maestro. Verifica las políticas RLS.");
+        }
       }
     }
 
     return true;
   } catch (e) {
     console.error("Error eliminando repuesto:", e);
-    return false;
+    throw e;
   }
 }
 
@@ -453,18 +854,26 @@ export async function dbRegistrarMovimiento(params: {
 
   const sucursalId = unmapSucursalId(params.sucursal);
 
-  let targetInvId = Number(params.repuestoId);
-  if (isNaN(targetInvId)) {
-    const { data: foundInv } = await supabase
-      .from("inventario_repuestos")
-      .select("id, repuesto_id")
-      .eq("sucursal_id", sucursalId)
-      .limit(1);
-    if (foundInv && foundInv.length > 0) {
-      targetInvId = foundInv[0].id;
-    } else {
-      targetInvId = 1;
-    }
+  const targetInvId = Number(params.repuestoId);
+  if (!Number.isInteger(targetInvId) || targetInvId <= 0) {
+    console.error("ID de inventario inválido para registrar el movimiento:", params.repuestoId);
+    return false;
+  }
+
+  const { data: inventoryRow, error: inventoryLookupError } = await supabase
+    .from("inventario_repuestos")
+    .select("id, repuesto_id")
+    .eq("id", targetInvId)
+    .eq("sucursal_id", sucursalId)
+    .maybeSingle();
+  if (inventoryLookupError || !inventoryRow) {
+    console.error("No se encontró el inventario del movimiento:", inventoryLookupError);
+    return false;
+  }
+  const maestroRepuestoId = inventoryRow.repuesto_id;
+  if (!maestroRepuestoId) {
+    console.error("El inventario no está asociado a un repuesto:", targetInvId);
+    return false;
   }
 
   const { error: stockError } = await supabase
@@ -474,6 +883,7 @@ export async function dbRegistrarMovimiento(params: {
 
   if (stockError) {
     console.error("Error actualizando stock en Supabase:", stockError);
+    return false;
   }
 
   let parsedUserId = Number(params.usuarioId);
@@ -484,17 +894,6 @@ export async function dbRegistrarMovimiento(params: {
       .ilike("nombre", params.usuarioNombre)
       .limit(1);
     parsedUserId = foundUser && foundUser.length > 0 ? foundUser[0].id : 1;
-  }
-
-  let maestroRepuestoId = 1;
-  const { data: invRow } = await supabase
-    .from("inventario_repuestos")
-    .select("repuesto_id")
-    .eq("id", targetInvId)
-    .single();
-
-  if (invRow?.repuesto_id) {
-    maestroRepuestoId = invRow.repuesto_id;
   }
 
   const tipoUpper = params.tipo === "salida" ? "SALIDA" : "ENTRADA";
@@ -539,7 +938,7 @@ export async function dbFetchMovimientos(): Promise<MovimientoInventario[]> {
 
   if (error) {
     console.error("Error cargando kardex:", error);
-    return [];
+    throw error;
   }
 
   return (data || []).map((row: any) => {
@@ -577,7 +976,7 @@ export async function dbFetchHerramientas(): Promise<Herramienta[]> {
 
   if (error) {
     console.error("Error cargando herramientas:", error);
-    return [];
+    throw error;
   }
 
   return (data || []).map((row: any) => ({
@@ -653,73 +1052,49 @@ export async function dbLoginUsuario(
 
   try {
     // 1. Autenticación oficial usando Supabase Auth nativo
-    let { data: authData, error: authError } = await supabase.auth.signInWithPassword({
+    const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
       email: cleanEmail,
       password: pass,
     });
 
-    let authUser = authData?.user;
-
-    // 2. Traer el perfil complementario filtrando por auth_id o por email en la tabla usuarios
-    let userData: any = null;
-
-    if (authUser) {
-      const { data: byAuthId } = await supabase
-        .from("usuarios")
-        .select("*")
-        .eq("auth_id", authUser.id)
-        .maybeSingle();
-      if (byAuthId) {
-        userData = byAuthId;
+    if (authError || !authData.user) {
+      if (authError?.code === "invalid_credentials") {
+        return { ok: false, error: "El correo o la contraseña no son correctos." };
       }
-    }
-
-    // Fallback: Si no se encontró por auth_id o si Supabase Auth requiere verificación de correo
-    if (!userData) {
-      const { data: byEmail } = await supabase
-        .from("usuarios")
-        .select("*")
-        .ilike("email", cleanEmail)
-        .maybeSingle();
-
-      if (byEmail && (byEmail.password_hash === pass || !byEmail.password_hash)) {
-        userData = byEmail;
-
-        // Auto-registro automático en Supabase Auth si el usuario no existe aún en auth.users
-        if (!authUser) {
-          try {
-            const { data: newAuth } = await supabase.auth.signUp({
-              email: cleanEmail,
-              password: pass,
-            });
-            if (newAuth?.user) {
-              authUser = newAuth.user;
-            }
-          } catch (e) {
-            console.warn("Aviso en auto-registro diferido en Supabase Auth:", e);
-          }
-        }
-
-        if (authUser?.id) {
-          try {
-            await supabase
-              .from("usuarios")
-              .update({ auth_id: authUser.id })
-              .eq("id", byEmail.id);
-          } catch {
-            // Ignorar
-          }
-        }
+      if (authError?.code === "email_not_confirmed") {
+        return { ok: false, error: "El correo de esta cuenta aún no está confirmado." };
       }
+      if (authError) {
+        console.error("Error de Supabase Auth al iniciar sesión:", authError);
+        return { ok: false, error: "No se pudo validar el inicio de sesión. Revisa tu conexión e inténtalo de nuevo." };
+      }
+      return { ok: false, error: "No se pudo validar la cuenta. Inténtalo de nuevo." };
     }
 
-    if (!userData) {
-      console.error("Error al autenticar usuario:", authError?.message);
-      return { ok: false, error: "Credenciales incorrectas o usuario inactivo." };
+    const { data: userData, error: profileError } = await supabase
+      .from("usuarios")
+      .select("id, nombre, email, rol, sucursal_id, activo, password_temporal")
+      .eq("auth_id", authData.user.id)
+      .maybeSingle();
+
+    if (profileError) {
+      await supabase.auth.signOut();
+      console.error("Error al cargar el perfil autenticado:", profileError);
+      return { ok: false, error: "No se pudo validar el perfil. Contacta al administrador." };
     }
 
-    if (!userData.activo) {
-      return { ok: false, error: "El usuario se encuentra inactivo." };
+    if (!userData || !userData.activo) {
+      await supabase.auth.signOut();
+      return {
+        ok: false,
+        error: userData ? "El usuario se encuentra inactivo." : "No existe un perfil asociado a esta cuenta.",
+      };
+    }
+
+    if (userData.rol !== "gerente" && userData.rol !== "vendedor") {
+      await supabase.auth.signOut();
+      console.error("El perfil tiene un rol no permitido:", userData.rol);
+      return { ok: false, error: "El perfil tiene un rol inválido. Contacta al administrador." };
     }
 
     const u: Usuario = {
@@ -740,19 +1115,52 @@ export async function dbLoginUsuario(
   }
 }
 
+export async function dbFetchUsuarioAutenticado(): Promise<Usuario | null> {
+  if (!supabase) return null;
+
+  const { data: authData, error: authError } = await supabase.auth.getUser();
+  if (authError) throw new Error(`No se pudo validar la sesión de Supabase: ${authError.message}`);
+  if (!authData.user) return null;
+
+  const { data, error } = await supabase
+    .from("usuarios")
+    .select("id, nombre, email, rol, sucursal_id, activo, password_temporal")
+    .eq("auth_id", authData.user.id)
+    .maybeSingle();
+
+  if (error) throw new Error(`No se pudo cargar el perfil autenticado: ${error.message}`);
+  if (!data || !data.activo) return null;
+  if (data.rol !== "gerente" && data.rol !== "vendedor") {
+    throw new Error(`Rol inválido en el perfil autenticado: ${data.rol}`);
+  }
+
+  return {
+    id: String(data.id),
+    nombre: data.nombre,
+    email: data.email,
+    password: "",
+    rol: data.rol,
+    sucursal: mapSucursalId(data.sucursal_id),
+    activo: Boolean(data.activo),
+    passwordTemporal: Boolean(data.password_temporal),
+  };
+}
+
 // 9. Cargar y Gestionar Usuarios
 export async function dbFetchUsuarios(): Promise<Usuario[]> {
   if (!supabase) return [];
-  const { data, error } = await supabase.from("usuarios").select("*");
+  const { data, error } = await supabase
+    .from("usuarios")
+    .select("id, nombre, email, rol, sucursal_id, activo, password_temporal");
   if (error) {
     console.error("Error cargando usuarios:", error);
-    return [];
+    throw error;
   }
   return (data || []).map((row: any) => ({
     id: String(row.id),
     nombre: row.nombre,
     email: row.email,
-    password: row.password_hash || "123456",
+    password: "",
     rol: row.rol,
     sucursal: mapSucursalId(row.sucursal_id),
     activo: Boolean(row.activo),
@@ -824,7 +1232,6 @@ export async function dbCrearUsuario(
     sucursal_id: unmapSucursalId(u.sucursal),
     nombre: u.nombre.trim(),
     email: cleanEmail,
-    password_hash: u.password,
     rol: u.rol,
     activo: u.activo,
   };
@@ -865,11 +1272,6 @@ export async function dbActualizarUsuario(u: Usuario): Promise<boolean> {
     rol: u.rol,
     activo: u.activo,
   };
-  if (u.password) {
-    payload.password_hash = u.password;
-    payload.password_temporal = false;
-  }
-
   try {
     if (isNum) {
       const { error } = await supabase.from("usuarios").update(payload).eq("id", numId);
@@ -944,56 +1346,21 @@ export async function dbEliminarUsuario(id: string, email?: string): Promise<boo
 // 14. Solicitar recuperación de contraseña (envía enlace de Supabase Auth)
 export async function dbSolicitarRecuperacionPassword(
   email: string
-): Promise<{ ok: boolean; error?: string; usuario?: { id: string; nombre: string; email: string }; authResent?: boolean }> {
+): Promise<{ ok: boolean; error?: string; authResent?: boolean }> {
   if (!supabase) return { ok: false, error: "Base de datos Supabase no configurada." };
 
   const cleanEmail = email.trim().toLowerCase();
 
   try {
-    const { data: usuario, error: errBusqueda } = await supabase
-      .from("usuarios")
-      .select("id, nombre, email, activo")
-      .ilike("email", cleanEmail)
-      .maybeSingle();
-
-    if (errBusqueda) {
-      console.error("Error al buscar usuario para recuperación:", errBusqueda);
-      return { ok: false, error: "Error al consultar la base de datos." };
-    }
-
-    if (!usuario) {
-      return { ok: false, error: "No se encontró ningún empleado registrado con este correo electrónico." };
-    }
-
-    if (!usuario.activo) {
-      return { ok: false, error: "La cuenta de este empleado se encuentra inactiva. Contacta al gerente." };
-    }
-
-    // Omitir redirectTo usa el Site URL permitido configurado en Supabase Auth.
-    const { error: resetError } = await supabase.auth.resetPasswordForEmail(cleanEmail);
+    const { error: resetError } = await supabase.auth.resetPasswordForEmail(cleanEmail, {
+      redirectTo: `${window.location.origin}/?type=recovery`,
+    });
     if (resetError) {
       console.error("Error de Supabase Auth al enviar recuperación:", resetError);
-      return {
-        ok: false,
-        error: resetError.message,
-        usuario: {
-          id: String(usuario.id),
-          nombre: usuario.nombre,
-          email: usuario.email,
-        },
-        authResent: false,
-      };
+      return { ok: false, error: resetError.message, authResent: false };
     }
 
-    return {
-      ok: true,
-      usuario: {
-        id: String(usuario.id),
-        nombre: usuario.nombre,
-        email: usuario.email,
-      },
-      authResent: true,
-    };
+    return { ok: true, authResent: true };
   } catch (err: any) {
     console.error("Excepción en dbSolicitarRecuperacionPassword:", err);
     return { ok: false, error: "Ocurrió un error inesperado al procesar la solicitud." };
@@ -1002,185 +1369,61 @@ export async function dbSolicitarRecuperacionPassword(
 
 // 15. Cambiar contraseña definitiva
 export async function dbCambiarPasswordUsuario(
-  id: string,
   nuevaPassword: string,
   email?: string
-): Promise<{ ok: boolean; error?: string }> {
+): Promise<{ ok: boolean; error?: string; warning?: string }> {
   if (!supabase) return { ok: false, error: "Base de datos Supabase no configurada." };
 
-  const cleanPass = nuevaPassword.trim();
-  const numId = parseInt(id, 10);
-  const isNum = !isNaN(numId);
+  const cleanPass = nuevaPassword;
   const cleanEmail = email ? email.trim().toLowerCase() : "";
 
   try {
-    let authUserId: string | undefined;
-    try {
-      const { data: authSession } = await supabase.auth.getSession();
-      const authUserEmail = authSession?.session?.user?.email?.trim().toLowerCase();
-      if (authUserEmail && cleanEmail && authUserEmail === cleanEmail) {
-        authUserId = authSession.session?.user?.id;
-        const { error: authUpdateError } = await supabase.auth.updateUser({ password: cleanPass });
-        if (authUpdateError) {
-          return { ok: false, error: authUpdateError.message || "Supabase Auth no pudo actualizar la contraseña." };
-        }
-      }
-    } catch (e) {
-      console.error("No se pudo actualizar la contraseña en Supabase Auth:", e);
-      return { ok: false, error: "No se pudo validar la sesión de recuperación. Solicita un enlace nuevo." };
+    const { data, error: authError } = await supabase.auth.getUser();
+    const authenticatedEmail = data.user?.email?.trim().toLowerCase();
+    if (authError || !data.user || (cleanEmail && authenticatedEmail !== cleanEmail)) {
+      return { ok: false, error: "La sesión de recuperación expiró. Solicita un enlace nuevo." };
     }
 
-    // Vincular el perfil con Auth solo si la columna existe, pero no bloquear
-    // el flujo si el usuario ya existe en Auth y el registro del perfil está incompleto.
-    const passwordUpdate: Record<string, unknown> = {
-      password_hash: cleanPass,
-      password_temporal: false,
+    const { error: passwordError } = await supabase.auth.updateUser({ password: cleanPass });
+    if (passwordError) {
+      return { ok: false, error: passwordError.message || "Supabase Auth no pudo actualizar la contraseña." };
+    }
+
+    const { data: updatedProfile, error: profileUpdateError } = await supabase
+      .from("usuarios")
+      .update({ password_temporal: false })
+      .eq("auth_id", data.user.id)
+      .select("id")
+      .maybeSingle();
+
+    if (!profileUpdateError && updatedProfile) {
+      return { ok: true };
+    }
+
+    const { error: rpcError } = await supabase.rpc("genesis_clear_own_temporary_password");
+    if (!rpcError) return { ok: true };
+
+    const profileErrors = [
+      profileUpdateError?.message,
+      !updatedProfile && !profileUpdateError ? "No se encontró un perfil actualizable para esta cuenta." : undefined,
+      rpcError.message,
+    ].filter(Boolean).join(" | ");
+    console.error("La contraseña se actualizó, pero no se pudo limpiar el estado temporal del perfil:", profileErrors);
+    return {
+      ok: true,
+      warning: "La contraseña se actualizó con exito. ",
     };
-    const payloadVariants: Record<string, unknown>[] = [
-      { ...passwordUpdate, ...(authUserId ? { auth_id: authUserId } : {}) },
-      { ...passwordUpdate },
-    ];
-    let actualizado = false;
-
-    const tryProfileUpdate = async (mode: "id" | "email") => {
-      const isIdMode = mode === "id";
-
-      for (const payload of payloadVariants) {
-        const res = await (isIdMode
-          ? supabase.from("usuarios").update(payload).eq("id", numId).select("id").maybeSingle()
-          : supabase.from("usuarios").update(payload).ilike("email", cleanEmail).select("id").maybeSingle());
-
-        if (!res.error && res.data) {
-          return true;
-        }
-
-        const fallbackRes = await (isIdMode
-          ? supabase
-              .from("usuarios")
-              .upsert({ id: numId, ...(cleanEmail ? { email: cleanEmail } : {}), ...payload }, { onConflict: "id" })
-              .select("id")
-              .maybeSingle()
-          : supabase
-              .from("usuarios")
-              .upsert({ ...(cleanEmail ? { email: cleanEmail } : {}), ...payload }, { onConflict: "email" })
-              .select("id")
-              .maybeSingle());
-
-        if (!fallbackRes.error && fallbackRes.data) {
-          return true;
-        }
-
-        if (fallbackRes.error) {
-          console.error(`Error al actualizar perfil por ${mode} con payload:`, fallbackRes.error);
-        }
-      }
-
-      return false;
-    };
-
-    if (isNum) {
-      actualizado = await tryProfileUpdate("id");
-    }
-
-    if (!actualizado && cleanEmail) {
-      actualizado = await tryProfileUpdate("email");
-    }
-
-    if (!actualizado) {
-      const errorDetails =
-        "Supabase Auth actualizó la contraseña, pero no se pudo actualizar el perfil del usuario. " +
-        "Revisa que exista el registro del usuario y que la tabla usuarios tenga las columnas requeridas.";
-      return { ok: false, error: errorDetails };
-    }
-
-    return { ok: true };
   } catch (err: any) {
     console.error("Excepción en dbCambiarPasswordUsuario:", err);
     return { ok: false, error: "Error inesperado al cambiar contraseña." };
   }
 }
 
-// 16. Inicializar / Poblar Base de Datos Completa
+// Se conserva la API para llamadas existentes, pero no se deben reinsertar
+// registros de demostración sobre una base de datos real.
 export async function dbSembrarDatosIniciales(): Promise<{ ok: boolean; message: string }> {
-  if (!supabase) return { ok: false, message: "Supabase no está configurado." };
-
-  try {
-    await supabase.from("sucursales").upsert([
-      { id: 1, nombre: "Sucursal Norte - Principal", direccion: "Av. Principal 123, Col. Centro", telefono: "555-0101", activo: true },
-      { id: 2, nombre: "Sucursal Sur - Express", direccion: "Blvd. Sur 456, Col. Industrial", telefono: "555-0202", activo: true },
-    ]);
-
-    await supabase.from("categorias_repuestos").upsert([
-      { id: 1, nombre: "Filtros", descripcion: "Filtros de aceite, aire, gasolina y cabina" },
-      { id: 2, nombre: "Frenos", descripcion: "Pastillas, discos, tambores y líquido de frenos" },
-      { id: 3, nombre: "Lubricantes", descripcion: "Aceites de motor, transmisión y diferenciales" },
-      { id: 4, nombre: "Suspensión", descripcion: "Amortiguadores, resortes, rótulas y terminales" },
-      { id: 5, nombre: "Eléctrico", descripcion: "Baterías, alternadores, marchas y sensores" },
-      { id: 6, nombre: "Motor", descripcion: "Bujías, bandas, empaques y pistones" },
-      { id: 7, nombre: "Transmisión", descripcion: "Embragues, bandas y engranes" },
-      { id: 8, nombre: "Carrocería", descripcion: "Espejos, fascias y manijas" },
-      { id: 9, nombre: "Neumáticos", descripcion: "Llantas, válvulas y rines" },
-      { id: 10, nombre: "Otro", descripcion: "Otros repuestos y accesorios" },
-    ]);
-
-    await supabase.from("proveedores").upsert([
-      { id: 1, razon_social: "Distribuidora Toyota MX", rfc_nit: "DTM200101AA1", telefono: "555-1111", email: "ventas@toyotamx.com" },
-      { id: 2, razon_social: "AutoPartes Norte", rfc_nit: "APN190315BB2", telefono: "555-2222", email: "contacto@autopartesnorte.com" },
-      { id: 3, razon_social: "Lubricantes MX", rfc_nit: "LMX180808CC3", telefono: "555-3333", email: "pedidos@lubricantesmx.com" },
-      { id: 4, razon_social: "Refacciones Premium", rfc_nit: "RPR170601DD4", telefono: "555-4444", email: "info@refaccionespremium.com" },
-      { id: 5, razon_social: "ElectroCar SA", rfc_nit: "ECA160520EE5", telefono: "555-5555", email: "ventas@electrocar.com" },
-      { id: 6, razon_social: "Rendimiento Total", rfc_nit: "RTO210202FF6", telefono: "555-6666", email: "info@rendimientototal.com" },
-      { id: 7, razon_social: "Distribuidora VW MX", rfc_nit: "DVW150910GG7", telefono: "555-7777", email: "ventas@vwmx.com" },
-    ]);
-
-    await supabase.from("usuarios").upsert([
-      { id: 1, sucursal_id: 1, nombre: "Ever leonel", email: "gerente@taller.com", password_hash: "gerente123", rol: "gerente", activo: true },
-    ]);
-
-    await supabase.from("repuestos").upsert([
-      { id: 1, categoria_id: 1, proveedor_id: 1, codigo_parte: "FAC-001", nombre: "Filtro de aceite Toyota Corolla", marca: "Toyota" },
-      { id: 2, categoria_id: 2, proveedor_id: 2, codigo_parte: "PFD-012", nombre: "Pastillas de freno delanteras Nissan", marca: "Brembo" },
-      { id: 3, categoria_id: 3, proveedor_id: 3, codigo_parte: "ACM-030", nombre: "Aceite motor 5W-30 sintético 1L", marca: "Mobil 1" },
-      { id: 4, categoria_id: 4, proveedor_id: 4, codigo_parte: "AMD-024", nombre: "Amortiguador delantero Honda Civic", marca: "Monroe" },
-      { id: 5, categoria_id: 5, proveedor_id: 5, codigo_parte: "BAT-060", nombre: "Batería 12V 60Ah", marca: "Optima" },
-      { id: 6, categoria_id: 6, proveedor_id: 2, codigo_parte: "BUJ-NGK", nombre: "Bujías NGK Platino x4", marca: "NGK" },
-      { id: 7, categoria_id: 1, proveedor_id: 6, codigo_parte: "FAI-KN1", nombre: "Filtro de aire KN High Flow", marca: "K&N" },
-      { id: 8, categoria_id: 5, proveedor_id: 5, codigo_parte: "CBU-UNI", nombre: "Cable de bujía universal", marca: "Bosch" },
-      { id: 9, categoria_id: 1, proveedor_id: 7, codigo_parte: "FAC-VW1", nombre: "Filtro de aceite Volkswagen", marca: "Mann" },
-      { id: 10, categoria_id: 2, proveedor_id: 2, codigo_parte: "LDF-DOT4", nombre: "Líquido de frenos DOT4 500ml", marca: "Motul" },
-      { id: 11, categoria_id: 4, proveedor_id: 4, codigo_parte: "ROT-DEL", nombre: "Rótula delantera inferior", marca: "Moog" },
-      { id: 12, categoria_id: 5, proveedor_id: 5, codigo_parte: "ALT-UNI", nombre: "Alternador 12V 90A", marca: "Denso" },
-    ]);
-
-    await supabase.from("inventario_repuestos").upsert([
-      { id: 1, sucursal_id: 1, repuesto_id: 1, existencia: 24, stock_minimo: 10, precio_compra: 85, precio_venta: 140, ubicacion_fisica: "A1-E2", ultima_compra: "2026-07-15" },
-      { id: 2, sucursal_id: 1, repuesto_id: 2, existencia: 4, stock_minimo: 6, precio_compra: 320, precio_venta: 550, ubicacion_fisica: "B2-E1", ultima_compra: "2026-06-20" },
-      { id: 3, sucursal_id: 1, repuesto_id: 3, existencia: 48, stock_minimo: 20, precio_compra: 95, precio_venta: 165, ubicacion_fisica: "C1-E3", ultima_compra: "2026-08-01" },
-      { id: 4, sucursal_id: 1, repuesto_id: 4, existencia: 2, stock_minimo: 4, precio_compra: 780, precio_venta: 1350, ubicacion_fisica: "D3-E1", ultima_compra: "2026-05-10" },
-      { id: 5, sucursal_id: 1, repuesto_id: 5, existencia: 8, stock_minimo: 5, precio_compra: 1200, precio_venta: 1950, ubicacion_fisica: "E1-E2", ultima_compra: "2026-07-28" },
-      { id: 6, sucursal_id: 1, repuesto_id: 6, existencia: 0, stock_minimo: 8, precio_compra: 210, precio_venta: 380, ubicacion_fisica: "A2-E1", ultima_compra: "2026-04-15" },
-      { id: 7, sucursal_id: 1, repuesto_id: 7, existencia: 6, stock_minimo: 4, precio_compra: 450, precio_venta: 780, ubicacion_fisica: "A1-E3", ultima_compra: "2026-08-10" },
-      { id: 8, sucursal_id: 1, repuesto_id: 8, existencia: 11, stock_minimo: 5, precio_compra: 180, precio_venta: 320, ubicacion_fisica: "E2-E1", ultima_compra: "2026-06-05" },
-      { id: 9, sucursal_id: 2, repuesto_id: 9, existencia: 15, stock_minimo: 8, precio_compra: 90, precio_venta: 155, ubicacion_fisica: "A1-E1", ultima_compra: "2026-07-20" },
-      { id: 10, sucursal_id: 2, repuesto_id: 10, existencia: 22, stock_minimo: 10, precio_compra: 65, precio_venta: 110, ubicacion_fisica: "B1-E2", ultima_compra: "2026-08-05" },
-      { id: 11, sucursal_id: 2, repuesto_id: 11, existencia: 3, stock_minimo: 5, precio_compra: 290, precio_venta: 490, ubicacion_fisica: "D1-E1", ultima_compra: "2026-06-12" },
-      { id: 12, sucursal_id: 2, repuesto_id: 12, existencia: 1, stock_minimo: 2, precio_compra: 1450, precio_venta: 2400, ubicacion_fisica: "E1-E1", ultima_compra: "2026-03-30" },
-    ]);
-
-    await supabase.from("herramientas").upsert([
-      { id: 1, sucursal_id: 1, codigo_unico: "HR-001", nombre: "Escáner Automotriz OBD2", categoria: "Diagnóstico", estado: "disponible", notas: "Actualizado a software 2026" },
-      { id: 2, sucursal_id: 1, codigo_unico: "HR-002", nombre: "Pistola de impacto neumática 1/2\"", categoria: "Neumática", estado: "en_uso", notas: "Asignada a bahía 2" },
-      { id: 3, sucursal_id: 1, codigo_unico: "HR-003", nombre: "Gato hidráulico de patín 3 Ton", categoria: "Elevación", estado: "disponible" },
-      { id: 4, sucursal_id: 1, codigo_unico: "HR-004", nombre: "Juego de llaves combinadas 8-24mm", categoria: "Manual", estado: "disponible" },
-      { id: 5, sucursal_id: 1, codigo_unico: "HR-005", nombre: "Compresor de resortes de amortiguador", categoria: "Especial", estado: "mantenimiento", notas: "En revisión de rosca" },
-      { id: 6, sucursal_id: 2, codigo_unico: "HR-006", nombre: "Escáner Multimarca Pro", categoria: "Diagnóstico", estado: "disponible" },
-      { id: 7, sucursal_id: 2, codigo_unico: "HR-007", nombre: "Torquímetro 1/2\" 20-150 ft-lb", categoria: "Medición", estado: "disponible", notas: "Calibrado julio 2026" },
-      { id: 8, sucursal_id: 2, codigo_unico: "HR-008", nombre: "Rampa hidráulica de 2 postes", categoria: "Elevación", estado: "en_uso", notas: "Bahía 1" },
-    ]);
-
-    return { ok: true, message: "Datos iniciales sembrados con éxito en Supabase." };
-  } catch (err: any) {
-    console.error("Error al sembrar datos iniciales:", err);
-    return { ok: false, message: err?.message || "Error al poblar la base de datos." };
-  }
+  return {
+    ok: false,
+    message: "La carga de datos de demostración está deshabilitada para proteger los registros reales.",
+  };
 }

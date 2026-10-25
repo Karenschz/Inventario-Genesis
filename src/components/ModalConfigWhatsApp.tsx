@@ -141,37 +141,14 @@ export default function ModalConfigWhatsApp({
               </a>
               .<br />
               2. Escanea el código QR con el WhatsApp de tu teléfono.<br />
-              3. Pega aquí tu <strong>Instance ID</strong> y <strong>Token</strong>.
+              3. Guarda <strong>Instance ID</strong> y <strong>Token</strong> como secretos de la Edge Function en Supabase. No los pegues en esta pantalla.
             </p>
           </div>
 
-          {/* Credenciales */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div className="space-y-1.5">
-              <label className="text-xs font-semibold text-[var(--foreground)]">
-                Instance ID *
-              </label>
-              <input
-                type="text"
-                placeholder="ej: instance12345"
-                value={form.instanceId}
-                onChange={(e) => setForm({ ...form, instanceId: e.target.value.trim() })}
-                className="w-full px-3.5 py-2 text-sm rounded-lg bg-[var(--background)] border border-[var(--border)] text-[var(--foreground)] focus:outline-none focus:border-emerald-500 transition-colors font-mono"
-              />
-            </div>
-
-            <div className="space-y-1.5">
-              <label className="text-xs font-semibold text-[var(--foreground)]">
-                Token *
-              </label>
-              <input
-                type="password"
-                placeholder="Token de UltraMsg"
-                value={form.token}
-                onChange={(e) => setForm({ ...form, token: e.target.value.trim() })}
-                className="w-full px-3.5 py-2 text-sm rounded-lg bg-[var(--background)] border border-[var(--border)] text-[var(--foreground)] focus:outline-none focus:border-emerald-500 transition-colors font-mono"
-              />
-            </div>
+          <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-200">
+            Las credenciales no se guardan en el navegador. Configúralas en Supabase como secretos
+            <code className="mx-1">ULTRAMSG_INSTANCE_ID</code> y
+            <code className="mx-1">ULTRAMSG_TOKEN</code>.
           </div>
 
           {/* Tipo de Destinatario */}
@@ -284,7 +261,7 @@ export default function ModalConfigWhatsApp({
           <div className="pt-1">
             <button
               type="button"
-              disabled={probando || !form.instanceId || !form.token || !form.destinatario}
+              disabled={probando || !form.destinatario}
               onClick={handleProbar}
               className="w-full py-2.5 px-4 rounded-xl text-xs font-semibold border border-emerald-500/30 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 disabled:opacity-40 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2"
             >

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useApp } from "../context";
 import { SUCURSALES } from "../data";
+import { isSupabaseConfigured } from "../lib/supabase";
 import type { Usuario, Rol, Sucursal } from "../types";
 
 const EMPTY: Omit<Usuario, "id"> = {
@@ -66,12 +67,18 @@ function Modal({
             <label className="block text-xs font-medium text-[var(--muted-foreground)] mb-1">Correo electrónico *</label>
             <input type="email" value={form.email} onChange={(e) => set("email", e.target.value)} className="input-field" placeholder="usuario@taller.com" />
           </div>
-          <div>
-            <label className="block text-xs font-medium text-[var(--muted-foreground)] mb-1">
-              {usuario.id ? "Nueva contraseña (dejar vacío para no cambiar)" : "Contraseña *"}
-            </label>
-            <input type="password" value={form.password} onChange={(e) => set("password", e.target.value)} className="input-field" placeholder="Mínimo 6 caracteres" />
-          </div>
+          {usuario.id && isSupabaseConfigured ? (
+            <p className="text-xs text-[var(--muted-foreground)]">
+              La contraseña se gestiona en Supabase Auth. Usa la opción de recuperación desde la lista de usuarios.
+            </p>
+          ) : (
+            <div>
+              <label className="block text-xs font-medium text-[var(--muted-foreground)] mb-1">
+                {usuario.id ? "Nueva contraseña (dejar vacío para no cambiar)" : "Contraseña *"}
+              </label>
+              <input type="password" value={form.password} onChange={(e) => set("password", e.target.value)} className="input-field" placeholder="Mínimo 6 caracteres" />
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-xs font-medium text-[var(--muted-foreground)] mb-1">Rol</label>
@@ -143,6 +150,7 @@ export default function Usuarios() {
   const [filtroSucursal, setFiltroSucursal] = useState<"todas" | "sucursal1" | "sucursal2">("todas");
   const [notifTemp, setNotifTemp] = useState<{ nombre: string; email: string; pass: string; enviada: boolean } | null>(null);
   const [enviandoTempId, setEnviandoTempId] = useState<string | null>(null);
+  const [errorOperacion, setErrorOperacion] = useState("");
 
   const filtrados = usuarios.filter((u) => {
     const matchRol = filtroRol === "todos" || u.rol === filtroRol;
@@ -221,9 +229,16 @@ export default function Usuarios() {
               <div className="flex justify-end gap-2 pt-1">
                 <button onClick={() => setConfirmarEliminar(null)} className="btn-secondary">Cancelar</button>
                 <button
-                  onClick={() => {
-                    eliminarUsuario(confirmarEliminar);
-                    setConfirmarEliminar(null);
+                  onClick={async () => {
+                    setErrorOperacion("");
+                    try {
+                      await eliminarUsuario(confirmarEliminar);
+                      setConfirmarEliminar(null);
+                    } catch (error) {
+                      setErrorOperacion(
+                        error instanceof Error ? error.message : "No se pudo eliminar el usuario."
+                      );
+                    }
                   }}
                   className="px-4 py-2 rounded-lg text-sm font-medium bg-red-500 hover:bg-red-600 text-white transition-colors"
                 >
@@ -236,7 +251,12 @@ export default function Usuarios() {
       })()}
 
       <div className="p-6 max-w-4xl mx-auto">
-        <div className="flex items-center justify-between mb-5">
+      {errorOperacion && (
+        <p role="alert" className="mb-4 rounded-md border border-red-800/50 bg-red-950/40 px-3 py-2 text-xs text-red-300">
+          {errorOperacion}
+        </p>
+      )}
+      <div className="flex items-center justify-between mb-5">
           <div>
             <h1 className="font-display text-2xl text-[var(--foreground)]">Usuarios</h1>
             <p className="text-sm text-[var(--muted-foreground)] mt-0.5">Gestión de accesos y permisos</p>
@@ -354,7 +374,14 @@ export default function Usuarios() {
                   )}
                 </button>
                 <button
-                  onClick={() => toggleUsuario(u.id)}
+                  onClick={() => {
+                    setErrorOperacion("");
+                    void toggleUsuario(u.id).catch((error) => {
+                      setErrorOperacion(
+                        error instanceof Error ? error.message : "No se pudo cambiar el estado del usuario."
+                      );
+                    });
+                  }}
                   title={u.activo ? "Desactivar usuario" : "Activar usuario"}
                   className={`p-1.5 rounded-md transition-colors ${u.activo ? "hover:bg-yellow-950/30 text-[var(--muted-foreground)] hover:text-yellow-400" : "hover:bg-[var(--success)]/10 text-[var(--muted-foreground)] hover:text-[var(--success)]"}`}
                 >
