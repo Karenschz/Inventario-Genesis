@@ -29,14 +29,13 @@ const BACKUP_TABLES = [
   "sucursales",
   "categorias_repuestos",
   "proveedores",
-  "usuarios",
   "repuestos",
   "inventario_repuestos",
   "herramientas",
   "movimientos_kardex",
 ] as const;
 
-export type BackupTableName = (typeof BACKUP_TABLES)[number];
+export type BackupTableName = (typeof BACKUP_TABLES)[number] | "usuarios";
 const USER_EXPORT_COLUMNS =
   "id, auth_id, sucursal_id, nombre, email, rol, activo, password_temporal";
 
@@ -99,15 +98,10 @@ export async function dbExportarRespaldo(): Promise<string> {
     let from = 0;
 
     while (true) {
-      const result = table === "usuarios"
-        ? await supabase
-            .from("usuarios")
-            .select(USER_EXPORT_COLUMNS)
-            .range(from, from + pageSize - 1)
-        : await supabase
-            .from(table)
-            .select("*")
-            .range(from, from + pageSize - 1);
+      const result = await supabase
+        .from(table)
+        .select("*")
+        .range(from, from + pageSize - 1);
 
       if (result.error) {
         throw new Error(`No se pudo exportar la tabla ${table}: ${result.error.message}`);
@@ -127,13 +121,217 @@ export async function dbExportarRespaldo(): Promise<string> {
     "-- Respaldo de datos de Genesis generado desde la aplicacion.",
     `-- Fecha de exportacion: ${new Date().toISOString()}`,
     "-- Inserta filas faltantes sin duplicar; no elimina datos existentes.",
-    "-- Usuarios: actualiza perfiles existentes por ID; omite contrasenas.",
+    "-- No incluye usuarios ni contrasenas.",
     "-- Requiere que el esquema y las tablas de Supabase ya existan.",
     "BEGIN;",
     ...statements,
     "COMMIT;",
     "",
   ].join("\n\n");
+}
+
+type BackupData = Partial<Record<BackupTableName, Record<string, unknown>[]>>;
+
+function leerRespaldoSQL(sql: string): BackupData {
+  const contenido = sql.replace(/\r\n?/g, "\n").trim();
+  const inicio = contenido.indexOf("\nBEGIN;");
+  const fin = contenido.lastIndexOf("\nCOMMIT;");
+
+  if (
+    !contenido.startsWith("-- Respaldo de datos de Genesis generado desde la aplicacion.") ||
+    inicio < 0 ||
+    fin < inicio ||
+    contenido.slice(fin + "\nCOMMIT;".length).trim() !== ""
+  ) {
+    throw new Error("El archivo no tiene el formato de un respaldo SQL de Genesis.");
+  }
+
+  const datos: BackupData = {};
+  let restante = contenido.slice(inicio + "\nBEGIN;".length, fin).trim();
+  const escaparCadenaSQL = (value: string) => value.replace(/''/g, "'");
+
+  while (restante) {
+    const tablaMatch = restante.match(/^(INSERT INTO|UPDATE) public\."([^"]+)"/);
+    if (!tablaMatch) {
+      throw new Error("El respaldo contiene una instrucción no compatible.");
+    }
+
+    const operacion = tablaMatch[1];
+    const tabla = tablaMatch[2] as BackupTableName;
+    if (tabla !== "usuarios" && !BACKUP_TABLES.includes(tabla)) {
+      throw new Error(`El respaldo contiene una tabla no permitida: ${tabla}.`);
+    }
+
+    let coincidencia: RegExpExecArray | null;
+    if (operacion === "INSERT INTO" && tabla !== "usuarios") {
+      const patron = new RegExp(
+        `^INSERT INTO public\\."${tabla}"\\s+SELECT \\*\\s+FROM jsonb_populate_recordset\\(NULL::public\\."${tabla}", '((?:''|[^'])*)'::jsonb\\)\\s+ON CONFLICT DO NOTHING;`
+      );
+      coincidencia = patron.exec(restante);
+      if (!coincidencia) {
+        throw new Error(`La instrucción de respaldo para ${tabla} no es válida.`);
+      }
+    } else if (operacion === "UPDATE" && tabla === "usuarios") {
+      const patron =
+        /^UPDATE public\."usuarios" AS actual\nSET\n((?:  "[A-Za-z_][A-Za-z0-9_]*" = datos\."[A-Za-z_][A-Za-z0-9_]*",?\n)+)FROM jsonb_populate_record\(NULL::public\."usuarios", '((?:''|[^'])*)'::jsonb\) AS datos\nWHERE actual\."id" = datos\."id";/;
+      coincidencia = patron.exec(restante);
+      if (!coincidencia) {
+        throw new Error("La instrucción de respaldo para usuarios no es válida.");
+      }
+    } else {
+      throw new Error(`La operación de respaldo para ${tabla} no es compatible.`);
+    }
+
+    const valorJSON = escaparCadenaSQL(coincidencia[operacion === "UPDATE" ? 2 : 1]);
+    let filas: unknown;
+    try {
+      filas = JSON.parse(valorJSON);
+    } catch {
+      throw new Error(`Los datos de la tabla ${tabla} no contienen JSON válido.`);
+    }
+
+    if (operacion === "INSERT INTO") {
+      if (!Array.isArray(filas) || filas.some((fila) => !fila || typeof fila !== "object" || Array.isArray(fila))) {
+        throw new Error(`Los datos de la tabla ${tabla} tienen un formato inválido.`);
+      }
+      datos[tabla] = [...(datos[tabla] ?? []), ...(filas as Record<string, unknown>[])];
+    } else {
+      if (!filas || typeof filas !== "object" || Array.isArray(filas)) {
+        throw new Error("Los datos de usuarios tienen un formato inválido.");
+      }
+      const usuario = filas as Record<string, unknown>;
+      const camposPermitidos = new Set(USER_EXPORT_COLUMNS.split(", "));
+      if (
+        usuario.id === undefined ||
+        Object.keys(usuario).some((campo) => !camposPermitidos.has(campo))
+      ) {
+        throw new Error("El respaldo contiene campos de usuario no permitidos.");
+      }
+      const asignaciones = coincidencia[1].trimEnd().split("\n").map((linea) => {
+        const asignacion = linea.match(/^  "([^"]+)" = datos\."([^"]+)"[,]?$/);
+        return asignacion && asignacion[1] === asignacion[2] ? asignacion[1] : null;
+      });
+      const camposEsperados = Object.keys(usuario).filter((campo) => campo !== "id");
+      if (
+        asignaciones.some((campo) => campo === null) ||
+        asignaciones.length !== camposEsperados.length ||
+        asignaciones.some((campo, index) => campo !== camposEsperados[index])
+      ) {
+        throw new Error("Los campos de actualización de usuarios no coinciden con sus datos.");
+      }
+      datos.usuarios = [...(datos.usuarios ?? []), usuario];
+    }
+
+    restante = restante.slice(coincidencia[0].length).trim();
+  }
+
+  return datos;
+}
+
+export async function dbRestaurarRespaldo(sql: string): Promise<Record<BackupTableName, number>> {
+  if (!supabase || !isSupabaseConfigured) {
+    throw new Error("Supabase no está configurado.");
+  }
+
+  const datos = leerRespaldoSQL(sql);
+  const mapasIds: Partial<Record<BackupTableName, Map<string, unknown>>> = {};
+  const idsDuplicados: Partial<Record<BackupTableName, Set<string>>> = {};
+  const clavesUnicas = [
+    ["categorias_repuestos", "nombre"],
+    ["proveedores", "razon_social"],
+    ["repuestos", "codigo_parte"],
+    ["herramientas", "codigo_unico"],
+  ] as const;
+
+  for (const [tabla, columna] of clavesUnicas) {
+    const filas = datos[tabla] ?? [];
+    const valores = [...new Set(filas
+      .map((fila) => fila[columna])
+      .filter((valor): valor is string => typeof valor === "string" && valor.length > 0))];
+    if (valores.length === 0) continue;
+
+    const { data, error } = await supabase
+      .from(tabla)
+      .select(`id, ${columna}`)
+      .in(columna, valores);
+    if (error) {
+      throw new Error(`No se pudieron revisar duplicados en ${tabla}: ${error.message}`);
+    }
+
+    const idPorClave = new Map<string, unknown>();
+    for (const fila of (data ?? []) as Record<string, unknown>[]) {
+      const clave = fila[columna];
+      if (typeof clave === "string" && !idPorClave.has(clave)) {
+        idPorClave.set(clave, fila.id);
+      }
+    }
+
+    const mapaIds = new Map<string, unknown>();
+    const idsYaExistentes = new Set<string>();
+    for (const fila of filas) {
+      const clave = fila[columna];
+      if (typeof clave !== "string" || fila.id === undefined) continue;
+      const idExistente = idPorClave.get(clave);
+      const claveYaIncluida = idPorClave.has(clave);
+      const idCanonico = claveYaIncluida ? idExistente : fila.id;
+      if (claveYaIncluida) {
+        idsYaExistentes.add(String(fila.id));
+      } else {
+        idPorClave.set(clave, idCanonico);
+      }
+      mapaIds.set(String(fila.id), idCanonico);
+    }
+    mapasIds[tabla] = mapaIds;
+    idsDuplicados[tabla] = idsYaExistentes;
+  }
+
+  const remapearReferencia = (
+    tabla: BackupTableName,
+    columna: string,
+    mapa: Map<string, unknown> | undefined,
+  ) => {
+    if (!mapa) return;
+    for (const fila of datos[tabla] ?? []) {
+      const id = fila[columna];
+      if (id !== undefined) fila[columna] = mapa.get(String(id)) ?? id;
+    }
+  };
+
+  remapearReferencia("repuestos", "categoria_id", mapasIds.categorias_repuestos);
+  remapearReferencia("repuestos", "proveedor_id", mapasIds.proveedores);
+  remapearReferencia("inventario_repuestos", "repuesto_id", mapasIds.repuestos);
+  remapearReferencia("movimientos_kardex", "repuesto_id", mapasIds.repuestos);
+  for (const movimiento of datos.movimientos_kardex ?? []) {
+    if (movimiento.usuario_id !== null && movimiento.usuario_id !== undefined) {
+      movimiento.usuario_id = null;
+    }
+  }
+
+  const restaurados = Object.fromEntries([["usuarios", 0], ...BACKUP_TABLES.map((tabla) => [tabla, 0])]) as Record<
+    BackupTableName,
+    number
+  >;
+
+  for (const tabla of BACKUP_TABLES) {
+    const filas = (datos[tabla] ?? []).filter(
+      (fila) => !idsDuplicados[tabla]?.has(String(fila.id))
+    );
+    for (let indice = 0; indice < filas.length; indice += 250) {
+      const lote = filas.slice(indice, indice + 250);
+      const { data, error } = await supabase
+        .from(tabla)
+        .upsert(lote, { ignoreDuplicates: true })
+        .select("id");
+      if (error) {
+        throw new Error(
+          `Falló la restauración en ${tabla}; la carga puede estar incompleta: ${error.message}`
+        );
+      }
+      restaurados[tabla] += data?.length ?? 0;
+    }
+  }
+
+  return restaurados;
 }
 
 export async function dbExportarTablaCSV(table: BackupTableName): Promise<string> {
